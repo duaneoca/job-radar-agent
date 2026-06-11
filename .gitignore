@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.sqlite
+*.sqlite3
+checkpoints.db
+credentials.json
+token.json
+.DS_Store
+fixtures/real/
+*.local

@@ -1,0 +1,332 @@
+# INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
+
+**Version:** 0.1 (M0 draft)
+**Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
+**Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
+
+> Security requirements are **normative** (MUST/SHOULD). They are acceptance criteria, not
+> suggestions. Tags like `[C2]`, `[H1]` reference findings in `SECURITY_REVIEW.md`.
+
+---
+
+## 0. Roles & boundaries
+
+| Component | Repo | Responsibility |
+|---|---|---|
+| LangGraph agent | job-radar-agent | Reads email, classifies, validates, decides actions |
+| Email Reader MCP (Server 1) | job-radar-agent | Mailbox access (read / mark-read / move only) |
+| Notifiers + HITL poller | job-radar-agent | Slack/Telegram/Discord; resumes checkpoints from decisions |
+| Job Radar Writer MCP (Server 2) | job-radar | The agent's ONLY write path into Job Radar |
+| tracker-api `/agent/*` | job-radar | REST endpoints behind the Writer MCP + frontend |
+| Inbox UI + Ops dashboard | job-radar | Human review surface + business metrics |
+
+**Hard boundary:** the agent NEVER touches the Job Radar database directly. All reads/writes go
+through the Writer MCP → tracker-api. The agent NEVER creates `Job` or `UserJobReview` rows
+(job creation happens later via the existing bookmarklet `POST /jobs/manual`).
+
+---
+
+## 1. Data model (job-radar side — new tables)
+
+All UUID PKs. All `user_id` FK → `users.id` ON DELETE CASCADE. Follow existing convention:
+set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` on the relationship.
+
+### 1.1 `inbox_emails` — one row per processed source email
+| col | type | notes |
+|---|---|---|
+| id | UUID PK | |
+| user_id | UUID FK | |
+| message_id | text | RFC822 `Message-ID`; idempotency. UNIQUE `(user_id, message_id)` `[L1]` |
+| subject | text | |
+| sender | text | |
+| received_at | timestamptz | |
+| category | enum | `recruiter_outreach \| application_confirmation \| job_alert \| network_notification` |
+| confidence | float | model-justified, NOT email-settable `[C1]` |
+| raw_extracted_json | jsonb | full LLM output |
+| validation_attempts | int | |
+| escalation_reason | text null | set when status = `needs_review` |
+| status | enum | `pending \| processed \| needs_review \| discarded` |
+| langfuse_trace_id | text null | |
+| created_at | timestamptz | |
+
+### 1.2 `inbox_postings` — one row per extracted posting (N per email; cap 30) `[D11]`
+| col | type | notes |
+|---|---|---|
+| id | UUID PK | |
+| inbox_email_id | UUID FK → inbox_emails | |
+| user_id | UUID FK | |
+| company | text | |
+| role | text | |
+| link | text null | http/https ONLY, validated server-side `[C2]` |
+| action_required | bool | |
+| possible_duplicate | bool | fuzzy company+role match flag, never blocks `[D12]` |
+| matched_review_id | UUID null | FK → user_job_reviews if dup suspected |
+| import_status | enum | `pending \| imported \| dismissed` |
+| imported_review_id | UUID null | FK → user_job_reviews once user imports |
+| created_at | timestamptz | |
+
+### 1.3 `inbox_interactions` — one row per application-status-update email
+| col | type | notes |
+|---|---|---|
+| id | UUID PK | |
+| inbox_email_id | UUID FK | |
+| user_id | UUID FK | |
+| matched_review_id | UUID null | null ⇒ needs_review |
+| match_confidence | float | |
+| previous_status | enum null | JobStatus |
+| new_status | enum null | JobStatus, agent-writable subset only |
+| applied_at | timestamptz null | when status written to the review |
+| created_at | timestamptz | |
+
+### 1.4 `agent_api_keys` — per-user agent auth `[H1]`
+| col | type | notes |
+|---|---|---|
+| id | UUID PK | |
+| user_id | UUID FK | |
+| key_hash | text | hashed at rest (never store plaintext) |
+| key_hint | text | last 4 chars, e.g. `…aB3x` |
+| created_at / last_used_at | timestamptz | |
+| revoked | bool | |
+
+A key maps to **exactly one user**. The user is **derived** from the key on every request;
+`user_id` is NEVER accepted from the caller. `[H1]`
+
+### 1.5 `email_credentials` — per-user mailbox connection (cloud path) `[C3/H5]`
+| col | type | notes |
+|---|---|---|
+| id | UUID PK | |
+| user_id | UUID FK | |
+| provider | enum | `gmail \| imap` |
+| encrypted_blob | text | Fernet via **`ENCRYPTION_KEY`** (the JR-0 split key), NOT `SECRET_KEY` |
+| folder_root | text | e.g. `hire-duane` |
+| folder_interaction / _postings / _social / _unprocessed | text | configurable names `[D6]` |
+| created_at / updated_at | timestamptz | |
+
+Gmail stores an OAuth **refresh token** here — high value. SHOULD use a separate key tier / KMS
+envelope. Request **minimum** Gmail scope (label add/remove + mark-read); NEVER full mail scope. `[H5]`
+
+### 1.9 Three key types — do NOT conflate
+| Key | Purpose | Storage | Reuse? |
+|---|---|---|---|
+| **LLM provider key** (Anthropic/OpenAI/…) | Agent calls the LLM (Classifier + Critic) | **existing `user_api_keys`** (Fernet via `ENCRYPTION_KEY`) | **REUSE — do not build new** |
+| **Agent API key** (`X-Agent-Key`) | Agent authenticates TO Job Radar's Writer MCP (write-back) | `agent_api_keys` (§1.4) | new — the agent's own credential, NOT an LLM key |
+| **Email credentials** | Mailbox access | `email_credentials` (§1.5) | new |
+
+The agent calls the LLM **directly** (so Langfuse traces it), so it needs the **decrypted** LLM key
+at runtime — delivered in the `GET /agent/config` bundle (server decrypts `user_api_keys`, same as the
+`ai-reviewer` worker does per-request). Both Classifier and Critic use the one `{provider,
+preferred_model, api_key}` bundle (per D2/Q5). Handling rules: `[H6]`.
+
+### 1.6 `hitl_decisions` — interactive HITL resolution record `[C4]`
+| col | type | notes |
+|---|---|---|
+| id | UUID PK | |
+| user_id | UUID FK | |
+| hitl_id | text | correlates to the agent's checkpoint |
+| status | enum | `pending \| resolved \| abandoned` |
+| choice_review_id | UUID null | the user's pick; null ⇒ "none / leave in Unprocessed" |
+| created_at / resolved_at | timestamptz | abandon after 30 min (configurable) `[D14]` |
+
+### 1.6b `agent_runs` — operational heartbeat / run health
+| col | type | notes |
+|---|---|---|
+| id | UUID PK | |
+| user_id | UUID FK | |
+| environment | enum | `local \| cloud` |
+| agent_version | text | |
+| status | enum | `success \| partial \| failed` |
+| started_at / finished_at | timestamptz | |
+| emails_processed | int | |
+| postings_created | int | |
+| interactions_recorded | int | |
+| escalations | int | |
+| retries | int | |
+| error_summary | text null | populated on `failed`/`partial` |
+
+Counts only — NO subjects/senders (content lives in `inbox_emails`). Latest row per user = the
+dashboard's "agent last run / health" (recent `finished_at` + `success` ⇒ healthy; nothing in >2
+intervals ⇒ stale/down). LLM cost/latency are NOT here — they live in Langfuse (§6).
+
+### 1.7 Enum alignment (existing `JobStatus`)
+Full enum: `new, reviewed, applied, dismissed, interviewing, offer, rejected, expired`.
+**Agent-writable subset (enforced server-side):** `applied, interviewing, offer, rejected`. `[C1/D9]`
+The agent MUST NOT write `new, reviewed, dismissed, expired`.
+
+### 1.8 Retention
+Inbox rows auto-deleted after **14 days** (align with existing `terminal_ttl_days`), EXCEPT
+`needs_review` (kept until resolved). User-facing delete button on inbox rows. Deleting the last
+posting of an email deletes the `inbox_emails` row (mirror existing last-review-deletes-Job). `[Q7]`
+
+---
+
+## 2. tracker-api `/agent/*` endpoints (job-radar implements)
+
+**Auth model `[H1]`:**
+- **Agent-facing** endpoints: authenticated by **agent API key** (header `X-Agent-Key`); user derived
+  from key. NOT the user JWT.
+- **Frontend-facing** endpoints: existing user **JWT** (`get_current_user`).
+- **Slack-facing** callback: Slack **signing-secret** verification, no app auth. `[C4]`
+- Respect the route-ordering gotcha (literal routes before `{param}`) per job-radar `CLAUDE.md`.
+
+### 2.1 Agent-facing (called by Writer MCP)
+| Method/Path | Body / Query | Returns | Notes |
+|---|---|---|---|
+| `GET /agent/config` | (user from key) | `{provider, folders{...}, llm{provider, preferred_model, api_key}, email_credentials{...decrypted...}}` | **Cloud path only.** Returns DECRYPTED secrets — so it MUST be called **in-cluster** (`http://tracker-api/...`), never through Cloudflare `[H6a]`. **Local self-host path does NOT call this** — the local agent uses its own LLM key + Proton creds from local `.env`. Server-side decrypt; strongest auth; rate-limited; audit-logged. `[H6/C3]` |
+| `GET /agent/reviews` | (user from key) | `[{review_id, company, title, status, url}]` | The user's `UserJobReview` rows, for matching/dedup. |
+| `POST /agent/inbox` | inbox payload (§3.1) | `{inbox_email_id, posting_ids[]}` | Creates email + ≤30 postings. Validates link scheme `[C2]`. |
+| `POST /agent/interactions` | interaction payload (§3.2) | `{interaction_id, applied_status?}` | If matched, updates the review status + timeline (reuses existing PATCH logic) `[D9/D10]`. |
+| `POST /agent/hitl/register` | `{hitl_id, candidates[review_id]}` | `{ok}` | Agent registers a pending decision before/while posting Slack. |
+| `GET /agent/hitl/pending` | (user from key) | `[{hitl_id, status, choice_review_id}]` | Poller pulls resolved decisions `[C4]`. |
+| `POST /agent/hitl/consume` | `{hitl_id}` | `{ok}` | Poller marks a decision consumed after resuming. |
+| `POST /agent/runs` | run record (§3.4) | `{run_id}` | Operational heartbeat: agent reports each run's outcome + counts. Powers "agent last run / health". Counts only — no subjects/senders. Goes via normal write path (no creds → Cloudflare-fine). |
+
+### 2.2 Frontend-facing (JWT)
+| Method/Path | Returns |
+|---|---|
+| `GET /agent/inbox` | user's inbox emails + postings/interactions (paginated) |
+| `PATCH /agent/inbox/{id}` | dismiss / mark-handled |
+| `DELETE /agent/inbox/{id}` | delete (cascades postings; mirrors job delete) |
+| `GET /agent/stats` | ops-dashboard metrics (per-user); admin variant returns global |
+
+### 2.3 Slack-facing (signature-verified)
+| Method/Path | Notes |
+|---|---|
+| `POST /agent/hitl/callback` | Slack interactive callback. MUST verify `X-Slack-Signature` + timestamp (reject >5 min skew). Treat `hitl_id`/`choice` as untrusted; validate `choice_review_id` belongs to the same user as the decision `[C4/H1]`. Writes `hitl_decisions.status=resolved`. Rate-limited. |
+
+> Cloud-deployed agents resume directly from the cluster Postgres checkpointer; local agents resume
+> via the `GET /agent/hitl/pending` poll. The callback endpoint only RECORDS the decision — it is
+> checkpoint-location-agnostic. `[§8.15]`
+
+---
+
+## 3. Payload shapes
+
+### 3.1 `POST /agent/inbox`
+```json
+{
+  "message_id": "<CA+...@mail.gmail.com>",
+  "subject": "…", "sender": "recruiter@acme.com", "received_at": "2026-06-10T14:00:00Z",
+  "category": "job_alert",
+  "confidence": 0.93,
+  "langfuse_trace_id": "trace_abc",
+  "raw_extracted_json": { ... },
+  "postings": [
+    { "company": "Acme", "role": "FDE", "link": "https://…",
+      "action_required": true, "possible_duplicate": false, "matched_review_id": null }
+  ]
+}
+```
+Server: enforce ≤30 postings, http/https links only, dedup `(user_id, message_id)`.
+
+### 3.2 `POST /agent/interactions`
+```json
+{
+  "message_id": "<...>", "subject": "…", "sender": "talent@acme.com",
+  "received_at": "2026-06-10T14:00:00Z",
+  "category": "application_confirmation",
+  "confidence": 0.88, "langfuse_trace_id": "trace_xyz",
+  "matched_review_id": "uuid-or-null",
+  "match_confidence": 0.91,
+  "new_status": "interviewing",
+  "timeline_note": "Interview scheduled (from email)"
+}
+```
+Server: if `matched_review_id` present AND `new_status` in the writable subset → update the review
+(auto-timeline + auto `date_applied` on `applied`, reusing existing PATCH logic). Else record as
+`needs_review`. Reject any `new_status` outside `applied|interviewing|offer|rejected`. `[C1/D9]`
+
+### 3.3 Notification payloads (agent → notifier; informational contract)
+- **User:** `{kind, company, role, link?, deep_link_to_inbox_entry}` → rich Block Kit + button.
+- **Admin:** `{level, run_id, stage, error, message_id?, langfuse_trace_url}` → diagnostic text.
+- **HITL prompt:** `{hitl_id, company, candidates:[{review_id,label}]}` → buttons + "None".
+
+### 3.4 `POST /agent/runs` (run heartbeat)
+```json
+{
+  "environment": "local",
+  "agent_version": "0.1.0",
+  "status": "success",
+  "started_at": "2026-06-10T14:00:00Z",
+  "finished_at": "2026-06-10T14:00:42Z",
+  "emails_processed": 7, "postings_created": 12,
+  "interactions_recorded": 2, "escalations": 1, "retries": 3,
+  "error_summary": null
+}
+```
+
+---
+
+## 4. Writer MCP (Server 2) tool surface (job-radar implements)
+
+Transport HTTPS (streamable). Auth: `X-Agent-Key` per user. Each tool wraps one §2.1 call.
+| Tool | Maps to |
+|---|---|
+| `get_config()` | `GET /agent/config` |
+| `get_reviews()` | `GET /agent/reviews` |
+| `create_inbox_entry(payload)` | `POST /agent/inbox` |
+| `record_interaction(payload)` | `POST /agent/interactions` |
+| `register_hitl(hitl_id, candidates)` | `POST /agent/hitl/register` |
+| `report_run(record)` | `POST /agent/runs` |
+
+Internal MCP→tracker-api calls protected by NetworkPolicy + shared internal token; not publicly
+reachable. Cloudflare→origin TLS Full (Strict). `[H3]`
+
+---
+
+## 5. Cross-cutting security obligations (both sides)
+
+| # | Obligation | Owner |
+|---|---|---|
+| C1 | Email body treated as DATA (delimited); confidence model-justified; status subset enforced server-side | both |
+| C2 | URL scheme allowlist (http/https) at write AND render; sanitize/escape all agent-derived fields; never render raw HTML email | job-radar |
+| C3 | Email creds encrypted with dedicated `ENCRYPTION_KEY` (JR-0); decryption server-side only | job-radar |
+| C4 | Slack callback signature-verified, rate-limited, ownership-validated | job-radar |
+| H1 | Identity derived from API key; `user_id` never trusted from request; validate ownership of every id | job-radar |
+| H2 | Email body in LLM/Langfuse disclosed or redacted; admin channel membership controlled | agent |
+| H4 | Per-run email/token caps + daily spend ceiling + circuit breaker | agent |
+| H5 | Minimal Gmail scope; refresh tokens strongest key tier | both |
+| H6 | **Decrypted-credential transit & handling** — `GET /agent/config` returns plaintext secrets. TLS-only; agent holds them ephemerally in memory only (never log, never write to disk/checkpoint); minimize lifetime; endpoint rate-limited + audit-logged. **Cloud multi-user:** per-user isolation so one run's compromise ≠ all users' keys; consider not holding all users' creds simultaneously (fetch-per-user, discard after). | both |
+| H6a | **Decrypted creds never traverse Cloudflare.** Cloud agents call `GET /agent/config` **in-cluster** (`http://tracker-api`), bypassing the Cloudflare TLS-termination edge. **Local agents don't call it at all** — they use local `.env` creds (the owner's own LLM key + Proton creds; Gmail tokens for cloud users stay in-cluster). Result/telemetry data (inbox writes, `POST /agent/runs`) carries no creds, so it uses the normal Cloudflare path. | both |
+| M1/M2 | No attachment parsing, no remote content fetch, agent never dereferences links | agent |
+
+---
+
+## 6. Observability — the two panes
+
+### 7.1 Business pane (job-radar `GET /agent/stats`) — DERIVED, not shipped
+Metrics are aggregations of rows the agent already writes; there is no separate telemetry pipe.
+The local agent has no inbound connectivity — irrelevant, it only ever **pushes** results outbound.
+
+| Metric | Source |
+|---|---|
+| Emails processed (today/week) | `inbox_emails.created_at` |
+| Category breakdown | `inbox_emails.category` |
+| Validation retry rate | `inbox_emails.validation_attempts` |
+| Escalation rate | `inbox_emails.status = needs_review` |
+| Jobs imported | `inbox_postings.import_status = imported` |
+| Agent last run / health | latest `agent_runs` row (§1.6b) |
+
+`GET /agent/stats`: per-user view on the user's settings page; global view on the admin page (Q8).
+
+### 7.2 Engineering pane (Langfuse) — Option 1 (chosen)
+- **One shared Langfuse project** (admin-owned). EVERY agent — your local Proton agent + all cloud
+  agents — pushes traces **directly to it, outbound** (Langfuse is SaaS; source location irrelevant).
+  Local agent uses Langfuse keys in its local `.env`; cloud agents use cluster-held keys (friends
+  never see them). A third-party Proton self-hoster uses THEIR OWN Langfuse project / pane.
+- **Every trace tagged with `user_id` + `environment`** so it's attributable/filterable.
+- **Langfuse IS the admin LLM pane** — not rebuilt inside job-radar. The two panes are **cross-linked**
+  via `inbox_emails.langfuse_trace_id` (click a job-radar row → its Langfuse trace). Cost/latency/
+  token data stay in Langfuse only. (Option 2 — pulling Langfuse aggregates into job-radar via its
+  API server-side — is deferred, not v1.)
+
+---
+
+## 7. Build order (who builds what, when)
+
+1. **JR-0** credential hardening — **DONE** (precondition for `email_credentials`).
+2. **JR-1** tables (§1) + migration. **JR-2** endpoints (§2). → testable via curl + `X-Agent-Key`.
+3. **JR-3** Writer MCP (§4). → testable via MCP client.
+4. **A-2** Email Reader MCP → **A-3** agent happy path against real endpoints.
+5. **A-4** Langfuse, **A-5** notifiers + HITL, **JR-4** UI, then deploy (A-6/JR-5).
+
+> Contract changes are PRs against THIS file first, then both sides adapt.
