@@ -1,0 +1,31 @@
+{
+  "name": "application_rejection",
+  "description": "Post-application rejection → status rejected, matched review.",
+  "email": {
+    "message_id": "<synthetic-reject-1@example.com>",
+    "subject": "Update on your application to Globex",
+    "sender": "Globex Recruiting <noreply@globex.example>",
+    "received_at": "2026-06-08T10:00:00Z",
+    "body_text": "Dear Jordan,\n\nThank you for your interest in the Staff Engineer position at Globex. After careful consideration, we have decided to move forward with other candidates at this time. We wish you the best in your search.\n\nRegards,\nGlobex Recruiting",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "application_confirmation",
+    "destination": "interaction",
+    "outcome": "processed",
+    "interaction": {
+      "company": "Globex",
+      "role": "Staff Engineer",
+      "new_status": "rejected"
+    },
+    "reviews": [
+      {
+        "review_id": "rev-globex",
+        "company": "Globex",
+        "title": "Staff Engineer",
+        "status": "applied",
+        "url": "https://globex.example/jobs/staff"
+      }
+    ]
+  }
+}

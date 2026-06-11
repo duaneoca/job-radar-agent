@@ -1,0 +1,31 @@
+{
+  "name": "application_interview_reminder_no_change",
+  "description": "Interview reminder — activity, NO status change → interaction, new_status null.",
+  "email": {
+    "message_id": "<synthetic-reminder-1@example.com>",
+    "subject": "Reminder: your interview with Acme Corp tomorrow",
+    "sender": "Acme Scheduling <scheduling@acme.example>",
+    "received_at": "2026-06-11T18:00:00Z",
+    "body_text": "Hi Jordan,\n\nThis is a friendly reminder about your interview for the Forward Deployed Engineer role at Acme Corp tomorrow at 10:00 AM PT. Join link will be sent 15 minutes before.\n\n— Acme Scheduling",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "application_confirmation",
+    "destination": "interaction",
+    "outcome": "processed",
+    "interaction": {
+      "company": "Acme Corp",
+      "role": "Forward Deployed Engineer",
+      "new_status": null
+    },
+    "reviews": [
+      {
+        "review_id": "rev-acme",
+        "company": "Acme Corp",
+        "title": "Forward Deployed Engineer",
+        "status": "interviewing",
+        "url": "https://acme.example/jobs/fde"
+      }
+    ]
+  }
+}

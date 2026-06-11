@@ -1,0 +1,17 @@
+{
+  "name": "network_notification_impressions",
+  "description": "LinkedIn social noise (post impressions) → social folder, discarded.",
+  "email": {
+    "message_id": "<synthetic-social-1@example.com>",
+    "subject": "Jordan, your posts got 38 impressions last week",
+    "sender": "LinkedIn <notifications-noreply@linkedin.com>",
+    "received_at": "2026-06-10T08:00:00Z",
+    "body_text": "Your recent activity is getting noticed. You had 38 impressions and 4 profile views last week. See who's viewing your profile.\n\nhttps://www.linkedin.com/feed/",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "network_notification",
+    "destination": "social",
+    "outcome": "discarded"
+  }
+}

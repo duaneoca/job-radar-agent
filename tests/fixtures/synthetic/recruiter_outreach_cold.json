@@ -1,0 +1,23 @@
+{
+  "name": "recruiter_outreach_cold",
+  "description": "Cold recruiter outreach about a specific role → opportunity in Interaction folder.",
+  "email": {
+    "message_id": "<synthetic-recruiter-1@example.com>",
+    "subject": "Forward Deployed Engineer opportunity at Clera",
+    "sender": "Sam Recruiter <sam@getclera.example>",
+    "received_at": "2026-06-11T17:30:00Z",
+    "body_text": "Hi Jordan,\n\nI came across your profile and think you'd be a great fit for our Forward Deployed Engineer role at Clera. We're building AI tooling for finance teams. Would you be open to a quick chat this week?\n\nRole details: https://getclera.example/careers/fde\n\nBest,\nSam",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "recruiter_outreach",
+    "destination": "interaction",
+    "outcome": "processed",
+    "postings": [
+      {
+        "company": "Clera",
+        "role": "Forward Deployed Engineer"
+      }
+    ]
+  }
+}

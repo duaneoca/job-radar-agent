@@ -1,0 +1,31 @@
+{
+  "name": "application_received_thanks",
+  "description": "Automated 'application received' → status applied.",
+  "email": {
+    "message_id": "<synthetic-received-1@example.com>",
+    "subject": "We received your application — Initech",
+    "sender": "Initech Careers <careers@initech.example>",
+    "received_at": "2026-06-07T09:00:00Z",
+    "body_text": "Hi Jordan,\n\nThanks for applying to the Solutions Engineer role at Initech! We've received your application and our team will review it shortly. You'll hear from us if there's a match.\n\n— Initech Careers",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "application_confirmation",
+    "destination": "interaction",
+    "outcome": "processed",
+    "interaction": {
+      "company": "Initech",
+      "role": "Solutions Engineer",
+      "new_status": "applied"
+    },
+    "reviews": [
+      {
+        "review_id": "rev-initech",
+        "company": "Initech",
+        "title": "Solutions Engineer",
+        "status": "new",
+        "url": "https://initech.example/jobs/se"
+      }
+    ]
+  }
+}

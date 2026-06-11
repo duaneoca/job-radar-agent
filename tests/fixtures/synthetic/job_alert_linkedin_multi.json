@@ -1,0 +1,35 @@
+{
+  "name": "job_alert_linkedin_multi",
+  "description": "LinkedIn job-alert digest, multiple FDE postings across companies → postings folder.",
+  "email": {
+    "message_id": "<synthetic-linkedin-1@example.com>",
+    "subject": "Forward Deployed Engineer at Aurora and 3 more jobs for you",
+    "sender": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+    "received_at": "2026-06-10T19:00:00Z",
+    "body_text": "Your job alert for Forward Deployed Engineer\n\nForward Deployed Engineer\nAurora — San Francisco, CA (Hybrid)\nView job: https://www.linkedin.com/jobs/view/4000000001\n\nForward Deployed Engineer\nMotorq — Remote (US)\nView job: https://www.linkedin.com/jobs/view/4000000002\n\nForward Deployed Engineer\nInstacart — San Francisco, CA\nView job: https://www.linkedin.com/jobs/view/4000000003\n\nIntegration Engineer\nHarvey — New York, NY\nView job: https://www.linkedin.com/jobs/view/4000000004\n\nSee all jobs.",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "job_alert",
+    "destination": "postings",
+    "outcome": "processed",
+    "postings": [
+      {
+        "company": "Aurora",
+        "role": "Forward Deployed Engineer"
+      },
+      {
+        "company": "Motorq",
+        "role": "Forward Deployed Engineer"
+      },
+      {
+        "company": "Instacart",
+        "role": "Forward Deployed Engineer"
+      },
+      {
+        "company": "Harvey",
+        "role": "Integration Engineer"
+      }
+    ]
+  }
+}

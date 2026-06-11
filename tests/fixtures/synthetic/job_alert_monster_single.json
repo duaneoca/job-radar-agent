@@ -1,0 +1,23 @@
+{
+  "name": "job_alert_monster_single",
+  "description": "Monster single-posting alert → postings folder.",
+  "email": {
+    "message_id": "<synthetic-monster-1@example.com>",
+    "subject": "Your job alert for: Forward Deployed Engineer, United States",
+    "sender": "Monster <monster@notifications.monster.com>",
+    "received_at": "2026-06-09T13:00:00Z",
+    "body_text": "New job matching your alert:\n\nForward Deployed Engineer\nDatabricks — United States (Remote)\nApply: https://www.monster.com/job-openings/abc123\n",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "job_alert",
+    "destination": "postings",
+    "outcome": "processed",
+    "postings": [
+      {
+        "company": "Databricks",
+        "role": "Forward Deployed Engineer"
+      }
+    ]
+  }
+}

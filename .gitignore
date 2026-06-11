@@ -11,5 +11,7 @@ checkpoints.db
 credentials.json
 token.json
 .DS_Store
-fixtures/real/
+# Harvested real emails — PII, never commit (anchored + broad to be safe)
+tests/fixtures/real/
+**/fixtures/real/
 *.local
