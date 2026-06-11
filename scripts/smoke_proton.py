@@ -50,9 +50,15 @@ def main() -> int:
             print("   all folders seen:", folders)
             return 1
 
-        age = int(os.environ.get("MAX_EMAIL_AGE_DAYS", "14"))
-        unread = p.get_unread(ROOT, since_days=age, limit=25)
-        print(f"✓ {len(unread)} UNREAD (≤{age} days old, newest-first, capped 25) in '{ROOT}'")
+        # Same semantics as the server: 0/negative ⇒ no cutoff. Both knobs are env-overridable so
+        # you can pull a larger corpus for exploration, e.g.:
+        #   MAX_EMAIL_AGE_DAYS=0 MAX_EMAILS_PER_RUN=200 python scripts/smoke_proton.py
+        age_raw = int(os.environ.get("MAX_EMAIL_AGE_DAYS", "14"))
+        age = age_raw if age_raw > 0 else None
+        cap = int(os.environ.get("MAX_EMAILS_PER_RUN", "25"))
+        unread = p.get_unread(ROOT, since_days=age, limit=cap)
+        age_desc = f"≤{age} days old" if age else "all ages"
+        print(f"✓ {len(unread)} UNREAD ({age_desc}, newest-first, cap {cap}) in '{ROOT}'")
         for m in unread[:10]:
             mid = (m.message_id or "<no Message-ID>")[:60]
             att = " [has attachment]" if m.has_attachments else ""
