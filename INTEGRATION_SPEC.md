@@ -187,6 +187,24 @@ posting of an email deletes the `inbox_emails` row (mirror existing last-review-
 | `PATCH /agent/inbox/{id}` | dismiss / mark-handled |
 | `DELETE /agent/inbox/{id}` | delete (cascades postings; mirrors job delete) |
 | `GET /agent/stats` | ops-dashboard metrics (per-user); admin variant returns global |
+| `GET /agent/keys` | list this user's agent keys (`key_hint` only, never plaintext) |
+| `POST /agent/keys` | mint a new agent key; returns the plaintext **once** |
+| `DELETE /agent/keys/{id}` | revoke a key |
+
+### 2.2a "Email Agent" settings page (frontend, JR-4)
+A dedicated **Settings → Email Agent** page is the single per-user home for this feature. Sections:
+| Section | Backing |
+|---|---|
+| **Agent key** — generate / revoke; show `key_hint` (last 4); plaintext shown once on create | `agent_api_keys` / `/agent/keys` |
+| **Email connection** — Gmail "Connect" (OAuth) or IMAP creds (cloud users); local self-host uses local `.env` | `email_credentials` `[C3/H5]` |
+| **Folder config** — root + subfolder names (Interaction/Postings/Social/Unprocessed) | folder layout `[D6]` |
+| **Notifications** — Slack/Telegram/Discord channel + connect | notifier config `[D16]` |
+| **Agent status & stats** — last run / health + the per-user business stats | `agent_runs` + `GET /agent/stats` `[D21/Q8]` |
+| **Enable / disable** — pause the agent for this user | (toggle) |
+
+LLM provider/model keys stay on the EXISTING API Keys page (shared with scoring/research; the agent
+reuses them — do NOT duplicate). The global ops dashboard lives on the admin page; per-user stats
+live here on the user's Email Agent page.
 
 ### 2.3 Slack-facing (signature-verified)
 | Method/Path | Notes |
