@@ -1,5 +1,7 @@
 # Job Radar Email Agent
 
+[![CI](https://github.com/duaneoca/job-radar-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/duaneoca/job-radar-agent/actions/workflows/ci.yml)
+
 An agentic email-processing pipeline that reads job-related email, classifies and extracts
 structured data with an LLM, self-validates through a Classifier→Critic loop, escalates ambiguous
 cases to a human via interactive Slack, and writes results into [Job Radar](https://job-radar.net)'s
