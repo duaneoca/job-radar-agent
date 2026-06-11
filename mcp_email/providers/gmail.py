@@ -31,7 +31,11 @@ class GmailProvider(EmailProvider):
     def list_folders(self) -> list[str]:  # pragma: no cover - stub
         raise NotImplementedError
 
-    def get_unread(self, folder: str) -> list[EmailMessage]:  # pragma: no cover - stub
+    def get_unread(  # pragma: no cover - stub
+        self, folder: str, since_days: int | None = None, limit: int | None = None
+    ) -> list[EmailMessage]:
+        # Impl note: map to a Gmail query, e.g. `label:<folder> is:unread newer_than:{since_days}d`,
+        # ordered newest-first, capped at `limit`.
         raise NotImplementedError
 
     def get_email(self, message_id: str) -> EmailMessage | None:  # pragma: no cover - stub

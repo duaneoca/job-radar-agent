@@ -50,8 +50,9 @@ def main() -> int:
             print("   all folders seen:", folders)
             return 1
 
-        unread = p.get_unread(ROOT)
-        print(f"✓ {len(unread)} UNREAD message(s) in '{ROOT}'")
+        age = int(os.environ.get("MAX_EMAIL_AGE_DAYS", "14"))
+        unread = p.get_unread(ROOT, since_days=age, limit=25)
+        print(f"✓ {len(unread)} UNREAD (≤{age} days old, newest-first, capped 25) in '{ROOT}'")
         for m in unread[:10]:
             mid = (m.message_id or "<no Message-ID>")[:60]
             att = " [has attachment]" if m.has_attachments else ""

@@ -5,6 +5,7 @@ resolution, and the move destination guardrail.
 """
 
 import email
+import re
 from datetime import datetime
 
 import pytest
@@ -134,3 +135,51 @@ def test_move_and_mark_sets_seen_then_moves():
     moves = [c for c, _ in fake.commands if c in ("MOVE", "COPY")]
     assert seen_stores, "move_and_mark must mark \\Seen"
     assert moves, "move_and_mark must relocate the message"
+
+
+# ── age cutoff + newest-first + limit ─────────────────────────
+
+def test_imap_date_format():
+    from mcp_email.providers.proton import _imap_date
+    s = _imap_date(14)
+    assert re.match(r"^\d{2}-[A-Z][a-z]{2}-\d{4}$", s), s
+
+
+class _DatedFakeIMAP(_FakeIMAP):
+    """Serves 3 unread messages with distinct Dates so we can check ordering/limit."""
+
+    def __init__(self):
+        super().__init__()
+        self._msgs = {
+            b"1": b"Message-ID: <old@x>\r\nSubject: old\r\nDate: Mon, 01 Jun 2026 10:00:00 +0000\r\n\r\nx\r\n",
+            b"2": b"Message-ID: <new@x>\r\nSubject: new\r\nDate: Wed, 10 Jun 2026 10:00:00 +0000\r\n\r\nx\r\n",
+            b"3": b"Message-ID: <mid@x>\r\nSubject: mid\r\nDate: Tue, 05 Jun 2026 10:00:00 +0000\r\n\r\nx\r\n",
+        }
+
+    def uid(self, command, *args):
+        self.commands.append((command.upper(), args))
+        cmd = command.upper()
+        if cmd == "SEARCH":
+            return "OK", [b"1 2 3"]
+        if cmd == "FETCH":
+            uid = args[0]
+            return "OK", [(b"x (BODY[] {n}", self._msgs[uid]), b")"]
+        return "OK", [b""]
+
+
+def test_get_unread_includes_since_and_sorts_newest_first():
+    fake = _DatedFakeIMAP()
+    p = _provider_with_fake(fake)
+    msgs = p.get_unread("Folders/Hire Duane", since_days=14)
+    # SINCE present in the SEARCH
+    search_args = [a for c, a in fake.commands if c == "SEARCH"][0]
+    assert "SINCE" in search_args
+    # newest-first by Date header
+    assert [m.subject for m in msgs] == ["new", "mid", "old"]
+
+
+def test_get_unread_limit_caps_newest():
+    fake = _DatedFakeIMAP()
+    p = _provider_with_fake(fake)
+    msgs = p.get_unread("Folders/Hire Duane", since_days=14, limit=2)
+    assert [m.subject for m in msgs] == ["new", "mid"]

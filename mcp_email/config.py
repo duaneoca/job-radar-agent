@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     email_folder_social: str = "Social"
     email_folder_unprocessed: str = "Unprocessed"
 
+    # First-run / backlog controls
+    max_email_age_days: int = 14     # ignore unread mail older than this (0/negative ⇒ no cutoff)
+    max_emails_per_run: int = 100    # cap per run, newest-first
+
     # Proton Bridge (local path)
     proton_imap_host: str = "host.docker.internal"
     proton_imap_port: int = 1143

@@ -76,13 +76,18 @@ def list_folders() -> dict:
 
 
 @mcp.tool()
-def get_unread_emails() -> list[dict]:
+def get_unread_emails(limit: int | None = None) -> list[dict]:
     """
-    Return UNREAD emails in the configured ROOT folder only. Read mail is the human's; the agent
-    leaves it alone. To hand an already-read email to the agent, mark it unread.
+    Return UNREAD emails in the configured ROOT folder only, NEWEST-FIRST. Read mail is the human's;
+    the agent leaves it alone. To hand an already-read email to the agent, mark it unread.
+
+    Honors MAX_EMAIL_AGE_DAYS (old backlog is never fetched) and caps the result at `limit` or
+    MAX_EMAILS_PER_RUN — so a full folder on the first run stays bounded and cheap.
     """
     provider = _get_provider()
-    return [_serialize(m) for m in provider.get_unread(folders.root)]
+    since = settings.max_email_age_days if settings.max_email_age_days > 0 else None
+    cap = limit or settings.max_emails_per_run
+    return [_serialize(m) for m in provider.get_unread(folders.root, since_days=since, limit=cap)]
 
 
 @mcp.tool()

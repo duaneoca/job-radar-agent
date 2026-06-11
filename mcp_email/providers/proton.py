@@ -14,13 +14,19 @@ from __future__ import annotations
 import email
 import imaplib
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 
 from .base import EmailMessage, EmailProvider
 
 _MESSAGE_ID_RE = re.compile(rb"Message-ID", re.IGNORECASE)
+
+
+def _imap_date(since_days: int) -> str:
+    """IMAP SEARCH SINCE date, e.g. '28-May-2026'. Date-granular (no time), per RFC 3501."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+    return cutoff.strftime("%d-%b-%Y")
 
 
 def _decode(value: str | None) -> str:
@@ -118,15 +124,25 @@ class ProtonProvider(EmailProvider):
                 out.append(m.group(1))
         return out
 
-    def get_unread(self, folder: str) -> list[EmailMessage]:
+    def get_unread(
+        self, folder: str, since_days: int | None = None, limit: int | None = None
+    ) -> list[EmailMessage]:
         conn = self._imap()
         if conn.select(self._quote(folder))[0] != "OK":
             raise RuntimeError(f"cannot select folder: {folder}")
-        typ, data = conn.uid("SEARCH", None, "UNSEEN")
+        # Filter at the server: an old unread backlog never gets fetched or classified.
+        criteria: list = ["UNSEEN"]
+        if since_days is not None:
+            criteria += ["SINCE", _imap_date(since_days)]
+        typ, data = conn.uid("SEARCH", None, *criteria)
         if typ != "OK" or not data or not data[0]:
             return []
         uids = data[0].split()
-        return [m for uid in uids if (m := self._fetch_by_uid(folder, uid)) is not None]
+        messages = [m for uid in uids if (m := self._fetch_by_uid(folder, uid)) is not None]
+        # Newest-first so a capped run handles the most recent (most relevant) mail.
+        messages.sort(key=lambda m: m.received_at or datetime.min.replace(tzinfo=timezone.utc),
+                      reverse=True)
+        return messages[:limit] if limit else messages
 
     def get_email(self, message_id: str) -> EmailMessage | None:
         conn = self._imap()

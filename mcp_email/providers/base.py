@@ -42,8 +42,17 @@ class EmailProvider(ABC):
         """Return all folder paths visible to this account."""
 
     @abstractmethod
-    def get_unread(self, folder: str) -> list[EmailMessage]:
-        """Return UNREAD messages in `folder`. Read = the human owns it; the agent skips it."""
+    def get_unread(
+        self, folder: str, since_days: int | None = None, limit: int | None = None
+    ) -> list[EmailMessage]:
+        """
+        Return UNREAD messages in `folder`, newest-first. Read = the human owns it; agent skips it.
+
+        `since_days` — ignore messages received more than this many days ago. Applied at the server
+        (IMAP SINCE / Gmail query) so an old backlog is never fetched or classified. This is the
+        first-run cost control: an ancient unread pile is invisible to the agent. None ⇒ no cutoff.
+        `limit` — cap the number returned (newest-first), e.g. MAX_EMAILS_PER_RUN. None ⇒ no cap.
+        """
 
     @abstractmethod
     def get_email(self, message_id: str) -> EmailMessage | None:
