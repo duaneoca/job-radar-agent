@@ -32,6 +32,6 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r mcp_email/requirements.txt pytest
+          pip install -r mcp_email/requirements.txt -r agent/requirements.txt pytest
       - name: Run tests
         run: python -m pytest tests/ -q

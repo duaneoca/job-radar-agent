@@ -113,7 +113,10 @@ match → `slack_hitl` (writes checkpoint, posts buttons, EXITS; resumed later b
 
 ## Status
 
-Planning complete; JR-0 (job-radar credential hardening) done. Current phase: **M0** — this file +
-`INTEGRATION_SPEC.md` written. Next: job-radar builds JR-1/JR-2/JR-3 against the spec; this repo
-builds A-2 (Email Reader MCP) then A-3 (agent happy path). Example emails (synthetic/scrubbed) feed
-A-4 prompt seeding. Full plan: `/Users/duaneo/Claude/General/email_pipeline/EXECUTION_PLAN.md`.
+Planning complete; JR-0 (job-radar credential hardening) done. M0 (contract + context) done.
+**A-2 Email Reader MCP** built + live-validated against Proton Bridge. **A-3 LangGraph agent** built
+with fakes (LLM/Writer/Reader seams) — classify→critic→retry→escalate loop, routing, matching; 18
+tests green. NOT yet wired: real LLM client (litellm), real Writer MCP (needs job-radar JR-2/JR-3),
+Langfuse spans (A-4), notifiers + HITL resume (A-5), the top-level fan-out runner + scheduler/lock.
+Next: job-radar builds JR-1/JR-2/JR-3 against the spec; here, wire the real LLM + Writer, then A-4/A-5.
+Full plan: `/Users/duaneo/Claude/General/email_pipeline/EXECUTION_PLAN.md`.
