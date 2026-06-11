@@ -31,7 +31,7 @@ def _extract_key(data) -> str | None:
     if isinstance(data, str):
         return data
     if isinstance(data, dict):
-        for k in ("key", "api_key", "agent_key", "plaintext", "token", "value"):
+        for k in ("raw_key", "key", "api_key", "agent_key", "plaintext", "token", "value"):
             if data.get(k):
                 return data[k]
     return None
