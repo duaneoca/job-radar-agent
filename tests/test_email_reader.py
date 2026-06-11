@@ -74,3 +74,63 @@ def test_email_message_uses_message_id_as_key():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── regression: reads must NEVER set \Seen (BODY.PEEK), only move_and_mark does ──
+
+class _FakeIMAP:
+    """Minimal IMAP double that records every uid() command for assertions."""
+
+    def __init__(self):
+        self.commands = []
+        self._raw = (
+            b"Message-ID: <m1@x>\r\nFrom: r@acme.com\r\nSubject: hi\r\n"
+            b"Content-Type: text/plain\r\n\r\nbody\r\n"
+        )
+
+    def list(self):
+        return "OK", [b'(\\HasNoChildren) "/" "Folders/Hire Duane"']
+
+    def select(self, folder):
+        return "OK", [b"1"]
+
+    def uid(self, command, *args):
+        self.commands.append((command.upper(), args))
+        cmd = command.upper()
+        if cmd == "SEARCH":
+            return "OK", [b"1 2"]
+        if cmd == "FETCH":
+            return "OK", [(b"1 (BODY[] {44}", self._raw), b")"]
+        if cmd in ("STORE", "COPY", "MOVE", "EXPUNGE"):
+            return "OK", [b""]
+        return "OK", [b""]
+
+
+def _provider_with_fake(fake):
+    from mcp_email.providers.proton import ProtonProvider
+    p = ProtonProvider("h", 1, "u", "pw")
+    p._conn = fake
+    return p
+
+
+def test_get_unread_never_sets_seen_and_uses_peek():
+    fake = _FakeIMAP()
+    p = _provider_with_fake(fake)
+    p.get_unread("Folders/Hire Duane")
+    fetches = [a for c, a in fake.commands if c == "FETCH"]
+    assert fetches, "expected at least one FETCH"
+    assert all("BODY.PEEK[]" in " ".join(map(str, a)) for a in fetches), "reads must use BODY.PEEK"
+    # No flag mutation may occur during a read.
+    stores = [a for c, a in fake.commands if c == "STORE"]
+    assert stores == [], f"reads must not STORE flags, got {stores}"
+
+
+def test_move_and_mark_sets_seen_then_moves():
+    fake = _FakeIMAP()
+    p = _provider_with_fake(fake)
+    p.move_and_mark("<m1@x>", "Folders/Hire Duane/Postings")
+    seen_stores = [a for c, a in fake.commands
+                   if c == "STORE" and "\\Seen" in " ".join(map(str, a))]
+    moves = [c for c, _ in fake.commands if c in ("MOVE", "COPY")]
+    assert seen_stores, "move_and_mark must mark \\Seen"
+    assert moves, "move_and_mark must relocate the message"

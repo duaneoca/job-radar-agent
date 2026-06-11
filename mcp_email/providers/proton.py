@@ -178,7 +178,9 @@ class ProtonProvider(EmailProvider):
 
     def _fetch_by_uid(self, folder: str, uid: bytes) -> EmailMessage | None:
         conn = self._imap()
-        typ, data = conn.uid("FETCH", uid, "(RFC822)")
+        # BODY.PEEK[] reads WITHOUT setting \\Seen. Plain RFC822/BODY[] would implicitly mark the
+        # message read — which must NEVER happen on a read. \\Seen is set ONLY by move_and_mark.
+        typ, data = conn.uid("FETCH", uid, "(BODY.PEEK[])")
         if typ != "OK" or not data or not data[0]:
             return None
         raw = data[0][1]
