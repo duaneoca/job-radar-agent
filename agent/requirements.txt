@@ -2,6 +2,8 @@
 langgraph>=0.2.0
 pydantic>=2.5.0
 pydantic-settings>=2.5.0
+# Job Radar Writer (REST path — local self-host)
+httpx>=0.27.0
 # Production LLM client (provider-agnostic, mirrors job-radar's ai-reviewer)
 litellm>=1.50.0
 # Observability
