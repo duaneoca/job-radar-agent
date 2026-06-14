@@ -22,6 +22,35 @@ class EmailReaderClient(Protocol):
         ...
 
 
+class ProviderReader:
+    """
+    Adapts an EmailProvider (e.g. ProtonProvider) to EmailReaderClient for direct local use.
+
+    (The MCP-consuming path — connecting to the Email Reader stdio server as an MCP client — is a
+    thin follow-up wrapper; this exercises the same provider code the MCP server publishes.)
+    """
+
+    def __init__(self, provider, *, root: str, dest_folders: dict, since_days=None, limit=None):
+        self._p = provider
+        self._root = root
+        self._dest = dest_folders          # {"interaction": "<path>", ...}
+        self._since_days = since_days
+        self._limit = limit
+
+    def get_unread(self) -> list[EmailRef]:
+        out: list[EmailRef] = []
+        for m in self._p.get_unread(self._root, since_days=self._since_days, limit=self._limit):
+            out.append({
+                "message_id": m.message_id, "subject": m.subject, "sender": m.sender,
+                "received_at": m.received_at.isoformat() if m.received_at else None,
+                "body_text": m.body_text, "has_attachments": m.has_attachments,
+            })
+        return out
+
+    def move_and_mark(self, message_id: str, destination: Destination) -> None:
+        self._p.move_and_mark(message_id, self._dest[destination])
+
+
 class FakeReader:
     def __init__(self, unread: list[EmailRef] | None = None):
         self._unread = unread or []

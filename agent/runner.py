@@ -35,6 +35,7 @@ class RunResult:
     retries: int = 0
     errors: list[str] = field(default_factory=list)
     skipped: bool = False                   # lock held
+    details: list[dict] = field(default_factory=list)   # per-email {message_id, category, outcome, destination}
 
     def as_run_record(self, environment: str, agent_version: str,
                       started_at: str, finished_at: str) -> dict[str, Any]:
@@ -125,6 +126,14 @@ def run_once(
                 result.postings_created += len(c.postings)
                 if c.interaction is not None and outcome == "processed":
                     result.interactions_recorded += 1
+            result.details.append({
+                "message_id": email.get("message_id"),
+                "subject": email.get("subject", "")[:60],
+                "category": c.category.value if c is not None else None,
+                "confidence": c.confidence if c is not None else None,
+                "outcome": outcome,
+                "destination": final.get("destination"),
+            })
         return result
 
     try:
