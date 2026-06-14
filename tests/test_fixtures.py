@@ -96,7 +96,30 @@ def test_fixture_routes_correctly(fx):
 
 @pytest.mark.skipif(
     not os.environ.get("RUN_LLM_EVAL"),
-    reason="live LLM eval — set RUN_LLM_EVAL=1 and provider creds to run (real classifier vs expected)",
+    reason="live LLM eval — set RUN_LLM_EVAL=1 + LLM_API_KEY to run (real classifier vs expected)",
 )
-def test_llm_eval():  # pragma: no cover - opt-in, needs real LLM client (A-4)
-    pytest.skip("real LLM client not wired yet (A-4)")
+def test_llm_eval():  # pragma: no cover - opt-in, needs real LLM + key
+    """Run the REAL classifier over the corpus; assert category accuracy meets a floor."""
+    from agent.config import AgentSettings
+    from agent.llm_litellm import LiteLLMClient
+    from agent.prompts import wrap_email
+
+    s = AgentSettings()
+    assert s.llm_api_key, "set LLM_API_KEY"
+    client = LiteLLMClient(s.llm_provider, s.llm_model, s.llm_api_key)
+
+    correct, results = 0, []
+    for fx in FIXTURES:
+        e = fx["email"]
+        pred = client.structured(
+            system=PROMPTS.get("classifier"),
+            user=wrap_email(e["subject"], e["sender"], e["body_text"]),
+            schema=Classification,
+        )
+        ok = pred.category.value == fx["expected"]["category"]
+        correct += ok
+        results.append(f"  {'✓' if ok else '✗'} {fx['name']}: pred={pred.category.value} "
+                       f"exp={fx['expected']['category']} conf={pred.confidence:.2f}")
+    acc = correct / len(FIXTURES)
+    print(f"\nLLM category accuracy: {correct}/{len(FIXTURES)} = {acc:.0%}\n" + "\n".join(results))
+    assert acc >= 0.85, f"accuracy {acc:.0%} below floor"
