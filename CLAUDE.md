@@ -27,6 +27,10 @@ tests/              fixtures (synthetic only — real emails are gitignored)
 
 The Writer MCP (Server 2) does **NOT** live here — it's in `job-radar/services/mcp-writer/`.
 
+**Two writer topologies** (same `JobRadarWriter` protocol):
+- **local** — `RestWriter` (HTTPS to `/api/agent/*` + `X-Agent-Key`), creds from local `.env`. BUILT + contract-tested.
+- **cloud** — `McpWriter` (MCP streamable-HTTP → `http://jobradar-mcp-writer:8001/mcp`, `X-Agent-Key` header), creds via in-cluster `get_config`. DEFERRED — in-cluster-only, so built/tested at cloud-deploy time (with JR-5). `SLACK_SIGNING_SECRET` is a prerequisite for HITL then.
+
 ---
 
 ## Architecture (data flow)
