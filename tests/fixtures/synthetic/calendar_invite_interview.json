@@ -1,0 +1,31 @@
+{
+  "name": "calendar_invite_interview",
+  "description": "Calendar invite for an interview/1:1 \u2192 application_confirmation \u2192 Interaction folder (must be visible).",
+  "email": {
+    "message_id": "<synthetic-cal-1@example.com>",
+    "subject": "Invitation: Recruiter & Jordan 1:1 @ Wed Jun 18, 2026 5pm - 5:30pm",
+    "sender": "Acme Scheduling <calendar-notification@acme.example>",
+    "received_at": "2026-06-12T16:00:00Z",
+    "body_text": "You have been invited to the following event.\n\nForward Deployed Engineer \u2014 screening call\nWhen: Wed Jun 18, 2026 5:00pm \u2013 5:30pm (PT)\nWith: recruiter@acme.example, jordan@example.com\nJoin: https://meet.example/abc-defg-hij\n\nYes / Maybe / No",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "application_confirmation",
+    "destination": "interaction",
+    "outcome": "processed",
+    "interaction": {
+      "company": "Acme",
+      "role": "Forward Deployed Engineer",
+      "new_status": "interviewing"
+    },
+    "reviews": [
+      {
+        "review_id": "rev-acme",
+        "company": "Acme",
+        "title": "Forward Deployed Engineer",
+        "status": "applied",
+        "url": "https://acme.example/jobs/fde"
+      }
+    ]
+  }
+}

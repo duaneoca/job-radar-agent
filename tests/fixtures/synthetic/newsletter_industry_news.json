@@ -1,0 +1,17 @@
+{
+  "name": "newsletter_industry_news",
+  "description": "Newsletter / industry article \u2192 network_notification \u2192 Social.",
+  "email": {
+    "message_id": "<synthetic-news-1@example.com>",
+    "subject": "AI Is a Rocket Engine. Don't Strap It to a Brick.",
+    "sender": "The Pragmatic Engineer <newsletter@substack.example>",
+    "received_at": "2026-06-11T07:00:00Z",
+    "body_text": "This week: why platform quality gates matter more than model choice, plus 5 links on agentic workflows and a chart on FDE hiring trends. Read online: https://substack.example/p/rocket-engine",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "network_notification",
+    "destination": "social",
+    "outcome": "discarded"
+  }
+}

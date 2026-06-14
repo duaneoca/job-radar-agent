@@ -1,0 +1,23 @@
+{
+  "name": "calendar_invite_interview_unmatched",
+  "description": "Recruiter-initiated interview invite with NO tracked job \u2192 still filed to Interaction (visible), flagged needs_review.",
+  "email": {
+    "message_id": "<synthetic-cal-2@example.com>",
+    "subject": "Invitation: Intro call with Nimbus AI @ Thu Jun 19",
+    "sender": "Nimbus Talent <scheduling@nimbus.example>",
+    "received_at": "2026-06-12T17:00:00Z",
+    "body_text": "Nimbus AI would like to schedule an intro call about a Forward Deployed Engineer role.\nWhen: Thu Jun 19, 2026 11:00am PT\nJoin: https://meet.example/nimbus-intro",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "application_confirmation",
+    "destination": "interaction",
+    "outcome": "needs_review",
+    "interaction": {
+      "company": "Nimbus AI",
+      "role": "Forward Deployed Engineer",
+      "new_status": "interviewing"
+    },
+    "reviews": []
+  }
+}

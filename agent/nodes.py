@@ -178,8 +178,11 @@ class Nodes:
         if matched:
             return {"matched_review_id": matched["review_id"],
                     "destination": "interaction", "outcome": "processed"}
-        return {"destination": "unprocessed", "outcome": "needs_review",
-                "escalation_reason": "no confident job match for status update"}
+        # No tracked-job match — but interaction mail (interview invites, recruiter replies) is
+        # high-value and must stay VISIBLE. File to Interaction (not Unprocessed); flag for review
+        # so the human can match it. Missing an interview invite is the worst-case failure.
+        return {"destination": "interaction", "outcome": "needs_review",
+                "escalation_reason": "no confident job match — filed to Interaction for review"}
 
     def social_discard(self, state: AgentState) -> dict[str, Any]:
         email = state["email"]

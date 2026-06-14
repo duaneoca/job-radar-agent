@@ -48,8 +48,10 @@ def _classification_from_expected(exp: dict) -> Classification:
             new_status=WritableStatus(i["new_status"]) if i.get("new_status") else None,
             summary=i.get("summary", ""),
         )
+    # low_confidence fixtures (e.g. OTP/transactional) must fall below the gate so they escalate
+    conf = 0.2 if exp.get("low_confidence") else 0.9
     return Classification(
-        category=Category(exp["category"]), confidence=0.9, reasoning="fixture",
+        category=Category(exp["category"]), confidence=conf, reasoning="fixture",
         postings=postings, interaction=interaction,
     )
 
@@ -72,9 +74,11 @@ def test_fixture_routes_correctly(fx):
         "received_at": e.get("received_at"), "body_text": e["body_text"],
         "has_attachments": e.get("has_attachments", False),
     }
+    cls = _classification_from_expected(exp)
+    # supply enough for up to MAX_ATTEMPTS (low-confidence fixtures loop then escalate)
     nodes = Nodes(
-        llm=FakeLLM([_classification_from_expected(exp)]),
-        critic_llm=FakeLLM([Critique(valid=True)]),
+        llm=FakeLLM([cls, cls]),
+        critic_llm=FakeLLM([Critique(valid=True), Critique(valid=True)]),
         writer=FakeWriter(reviews=exp.get("reviews", [])),
         reader=FakeReader(),
         prompts=PROMPTS,
@@ -86,6 +90,8 @@ def test_fixture_routes_correctly(fx):
     if exp.get("destination"):
         assert nodes.reader.moves[-1] == (e["message_id"], exp["destination"])
 
+    if exp.get("low_confidence"):
+        return  # escalated; no write assertions
     if exp["category"] in ("job_alert", "recruiter_outreach"):
         assert nodes.writer.inbox_entries, "expected an inbox entry with postings"
     elif exp["category"] == "application_confirmation":

@@ -1,0 +1,18 @@
+{
+  "name": "verification_code_transactional",
+  "description": "OTP / verification code \u2014 not job-related \u2192 low confidence \u2192 escalates to Unprocessed.",
+  "email": {
+    "message_id": "<synthetic-otp-1@example.com>",
+    "subject": "547737 is your verification code",
+    "sender": "ZipRecruiter <no-reply@ziprecruiter.example>",
+    "received_at": "2026-06-12T15:30:00Z",
+    "body_text": "Your verification code is 547737. It expires in 10 minutes. If you didn't request this, ignore this email.",
+    "has_attachments": false
+  },
+  "expected": {
+    "category": "network_notification",
+    "destination": "unprocessed",
+    "outcome": "needs_review",
+    "low_confidence": true
+  }
+}

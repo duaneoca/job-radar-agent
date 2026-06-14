@@ -136,7 +136,8 @@ def test_write_interaction_no_match_needs_review():
         {"review_id": "r1", "company": "Acme", "title": "FDE", "status": "applied", "url": "u"}])
     out = nodes.write_interaction({"email": email(), "classification": cls})
     assert out["outcome"] == "needs_review"
-    assert out["destination"] == "unprocessed"
+    # unmatched interactions stay VISIBLE in the Interaction folder (not hidden in Unprocessed)
+    assert out["destination"] == "interaction"
 
 
 def test_finalize_moves_email():
