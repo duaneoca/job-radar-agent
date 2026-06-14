@@ -12,13 +12,29 @@ from agent.llm_litellm import LiteLLMClient, _extract_json, _model_string
 from agent.schemas import Category, Classification
 
 
-def test_model_string_adds_provider_prefix():
-    assert _model_string("anthropic", "claude-sonnet-4-6") == "anthropic/claude-sonnet-4-6"
-    assert _model_string("groq", "llama-3.3-70b") == "groq/llama-3.3-70b"
-    # already-prefixed strings are passed through untouched
+def test_model_string_all_four_vendors():
+    # job-radar's actual default model strings for each BYOK vendor (LLM_multivendor doc)
+    assert _model_string("anthropic", "claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
+    assert _model_string("openai", "gpt-4o-mini") == "openai/gpt-4o-mini"
+    # google/groq defaults already carry the LiteLLM prefix → passed through untouched
+    assert _model_string("google", "gemini/gemini-1.5-flash") == "gemini/gemini-1.5-flash"
+    assert _model_string("groq", "groq/llama-3.3-70b-versatile") == "groq/llama-3.3-70b-versatile"
+    # bare google/groq models get the right prefix too
+    assert _model_string("google", "gemini-1.5-pro") == "gemini/gemini-1.5-pro"
+    assert _model_string("groq", "llama-3.1-8b-instant") == "groq/llama-3.1-8b-instant"
+    # any already-prefixed string is passed through; unknown provider → no prefix
     assert _model_string("anthropic", "anthropic/claude-x") == "anthropic/claude-x"
-    # unknown provider → no prefix
     assert _model_string("mystery", "model-x") == "model-x"
+
+
+def test_llm_from_config_bundle_matches_agent_llm_config():
+    from agent.config import llm_from_config_bundle
+    # AgentLLMConfig shape: {provider, preferred_model, api_key}
+    c = llm_from_config_bundle({"llm": {"provider": "openai", "preferred_model": "gpt-4o", "api_key": "sk"}})
+    assert c is not None and c._model == "openai/gpt-4o" and c._api_key == "sk"
+    # null llm (user has no LLM key configured) → None
+    assert llm_from_config_bundle({"llm": None}) is None
+    assert llm_from_config_bundle({}) is None
 
 
 def test_extract_json_strips_fences_and_prose():
