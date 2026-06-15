@@ -45,14 +45,21 @@ def _extract_json(text: str) -> str:
     return s
 
 
+_GEN_NAME = {"Classification": "classify", "Critique": "critic"}
+
+
 class LiteLLMClient:
-    def __init__(self, provider: str, model: str, api_key: str, temperature: float = 0.0):
+    def __init__(self, provider: str, model: str, api_key: str, temperature: float = 0.0,
+                 langfuse=None):
         self._model = _model_string(provider, model)
         self._api_key = api_key
         self._temperature = temperature
+        self._lf = langfuse                      # optional Langfuse client; None = no tracing
 
     def structured(self, *, system: str, user: str, schema: type[T]) -> T:
         import litellm
+
+        from .observability import generation
 
         schema_json = json.dumps(schema.model_json_schema())
         sys_full = (
@@ -61,15 +68,21 @@ class LiteLLMClient:
             "(no prose, no markdown fences):\n"
             f"{schema_json}"
         )
-        resp = litellm.completion(
-            model=self._model,
-            api_key=self._api_key,
-            temperature=self._temperature,
-            messages=[
-                {"role": "system", "content": sys_full},
-                {"role": "user", "content": user},
-            ],
-            response_format={"type": "json_object"},
-        )
-        content = resp.choices[0].message.content or ""
-        return schema.model_validate_json(_extract_json(content))
+        messages = [
+            {"role": "system", "content": sys_full},
+            {"role": "user", "content": user},
+        ]
+        name = _GEN_NAME.get(schema.__name__, schema.__name__.lower())
+        with generation(self._lf, name=name, model=self._model, messages=messages) as gen:
+            resp = litellm.completion(
+                model=self._model, api_key=self._api_key, temperature=self._temperature,
+                messages=messages, response_format={"type": "json_object"},
+            )
+            content = resp.choices[0].message.content or ""
+            usage = getattr(resp, "usage", None)
+            gen.finish(
+                output=content,
+                usage={"input": getattr(usage, "prompt_tokens", None),
+                       "output": getattr(usage, "completion_tokens", None)} if usage else None,
+            )
+            return schema.model_validate_json(_extract_json(content))

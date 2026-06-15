@@ -19,6 +19,7 @@ from .graph import build_graph
 from .lock import LockHeld, run_lock
 from .llm import LLMClient
 from .nodes import Nodes
+from .observability import email_trace, get_langfuse
 from .prompts import PromptProvider
 from .reader import EmailReaderClient
 from .state import Destination
@@ -101,6 +102,8 @@ def run_once(
 ) -> RunResult:
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+    lf = get_langfuse()
+
     def _go() -> RunResult:
         result = RunResult()
         eff_reader = _NoMoveReader(reader) if dry_run else reader
@@ -111,7 +114,14 @@ def run_once(
 
         for email in reader.get_unread():
             try:
-                final = app.invoke({"email": email, "attempts": 0})
+                with email_trace(lf, message_id=email.get("message_id", "?"),
+                                 subject=email.get("subject", "")) as span:
+                    state = {"email": email, "attempts": 0, "langfuse_trace_id": span.trace_id}
+                    final = app.invoke(state)
+                    span.update(output={"outcome": final.get("outcome"),
+                                        "destination": final.get("destination"),
+                                        "category": (final.get("classification").category.value
+                                                     if final.get("classification") else None)})
             except Exception as exc:  # one poison email must not abort the whole run [L3]
                 result.status = "partial"
                 result.errors.append(f'{email.get("message_id","?")}: {type(exc).__name__}: {exc}')
@@ -153,4 +163,9 @@ def run_once(
             writer.report_run(result.as_run_record(environment, agent_version, started, finished))
         except Exception as exc:
             result.errors.append(f"report_run failed: {exc}")
+    if lf is not None:
+        try:
+            lf.flush()
+        except Exception:
+            pass
     return result

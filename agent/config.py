@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .llm import LLMClient
 from .llm_litellm import LiteLLMClient
+from .observability import get_langfuse
 
 
 class AgentSettings(BaseSettings):
@@ -34,14 +35,16 @@ settings = AgentSettings()
 
 
 def make_llm(settings: AgentSettings = settings) -> LLMClient:
-    """Classifier LLM from local env (BYOK)."""
-    return LiteLLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key)
+    """Classifier LLM from local env (BYOK), Langfuse-traced when configured."""
+    return LiteLLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key,
+                         langfuse=get_langfuse())
 
 
 def make_critic_llm(settings: AgentSettings = settings) -> LLMClient:
     """Critic LLM — same provider/key, optionally a cheaper model (D2/Q5)."""
     model = settings.critic_model or settings.llm_model
-    return LiteLLMClient(settings.llm_provider, model, settings.llm_api_key)
+    return LiteLLMClient(settings.llm_provider, model, settings.llm_api_key,
+                         langfuse=get_langfuse())
 
 
 def llm_from_config_bundle(bundle: dict) -> LLMClient | None:
