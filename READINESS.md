@@ -21,8 +21,9 @@ Last updated: 2026-06-12.
 - 69 tests, CI green, public repo, threat model (`SECURITY.md`).
 
 ## ⛔ NOT ready for inviting others — blockers
-1. **Gmail provider is a stub.** `GmailProvider` raises `NotImplementedError`. Non-Proton users
-   cannot connect at all. (#1 blocker — most invitees are Gmail.)
+1. **Gmail provider** — ✅ IMPLEMENTED (Gmail API/OAuth, gmail.modify, labels-as-folders).
+   OAuth + label detection verified live; **pending an end-to-end run on real labeled job mail**.
+   (Was the #1 blocker.)
 2. **No cloud runtime.** `McpWriter` (cloud writer over MCP), multi-user runner (iterate users,
    per-user creds via `get_config`, fetch-per-user-then-discard), Docker image, k8s CronJob — unbuilt.
    The agent has only ever run locally.
