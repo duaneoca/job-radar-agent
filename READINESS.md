@@ -22,8 +22,8 @@ Last updated: 2026-06-12.
 
 ## ⛔ NOT ready for inviting others — blockers
 1. **Gmail provider** — ✅ IMPLEMENTED (Gmail API/OAuth, gmail.modify, labels-as-folders).
-   OAuth + label detection verified live; **pending an end-to-end run on real labeled job mail**.
-   (Was the #1 blocker.)
+   Verified live END-TO-END on real labeled Gmail (read → classify → route, identical to Proton).
+   (Was the #1 blocker — now cleared.)
 2. **No cloud runtime.** `McpWriter` (cloud writer over MCP), multi-user runner (iterate users,
    per-user creds via `get_config`, fetch-per-user-then-discard), Docker image, k8s CronJob — unbuilt.
    The agent has only ever run locally.

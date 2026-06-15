@@ -38,10 +38,18 @@ def main(argv) -> int:
     if not agent_key:
         print("✗ set AGENT_API_KEY"); return 2
 
-    provider = ProtonProvider(
-        email_settings.proton_imap_host, email_settings.proton_imap_port,
-        email_settings.proton_imap_user, email_settings.proton_imap_password,
-    )
+    if email_settings.email_provider == "gmail":
+        from mcp_email.providers.gmail import GmailProvider
+        provider = GmailProvider(
+            token_file=email_settings.gmail_token_file,
+            credentials_file=email_settings.gmail_credentials_file,
+            root_folder=folders.root,
+        )
+    else:
+        provider = ProtonProvider(
+            email_settings.proton_imap_host, email_settings.proton_imap_port,
+            email_settings.proton_imap_user, email_settings.proton_imap_password,
+        )
     reader = ProviderReader(
         provider, root=folders.root,
         dest_folders={"interaction": folders.interaction, "postings": folders.postings,
