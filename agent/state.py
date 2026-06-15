@@ -50,6 +50,7 @@ class AgentState(TypedDict, total=False):
     destination: Optional[Destination]
     outcome: Optional[Outcome]
     escalation_reason: Optional[str]
+    inbox_email_id: Optional[str]       # returned by create_inbox_entry; for notification deep links
 
     # HITL (ambiguous interaction match)
     hitl_id: Optional[str]

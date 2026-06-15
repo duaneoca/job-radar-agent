@@ -133,7 +133,7 @@ class Nodes:
                 "possible_duplicate": m.best is not None,
                 "matched_review_id": (m.best or {}).get("review_id"),
             })
-        self.writer.create_inbox_entry({
+        resp = self.writer.create_inbox_entry({
             "message_id": email["message_id"], "subject": email["subject"],
             "sender": email["sender"], "received_at": email["received_at"],
             "category": c.category.value, "confidence": c.confidence,
@@ -142,7 +142,8 @@ class Nodes:
             "postings": payload_postings,
             "truncated": truncated,
         })
-        return {"destination": _CATEGORY_FOLDER[c.category], "outcome": "processed"}
+        return {"destination": _CATEGORY_FOLDER[c.category], "outcome": "processed",
+                "inbox_email_id": (resp or {}).get("inbox_email_id")}
 
     def write_interaction(self, state: AgentState) -> dict[str, Any]:
         email = state["email"]

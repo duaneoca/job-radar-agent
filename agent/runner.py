@@ -94,12 +94,17 @@ def run_once(
     llm: LLMClient,
     critic_llm: LLMClient,
     prompts: PromptProvider,
+    notifier=None,
+    inbox_base_url: str | None = None,
     environment: str = "local",
     agent_version: str = "0.1.0",
     dry_run: bool = False,
     use_lock: bool = True,
     lock_path: str = "/tmp/job-radar-agent.lock",
 ) -> RunResult:
+    from notifications import dispatch as _dispatch
+    from notifications.base import NullNotifier
+    notifier = notifier or NullNotifier()
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     lf = get_langfuse()
@@ -144,6 +149,21 @@ def run_once(
                 "outcome": outcome,
                 "destination": final.get("destination"),
             })
+            # notifications (dry-run still notifies — it's read-only, not a mailbox mutation)
+            try:
+                if outcome == "awaiting_hitl" and c is not None and c.interaction is not None:
+                    _dispatch.hitl_prompt(notifier, company=c.interaction.company,
+                                          hitl_id=final.get("hitl_id", ""),
+                                          candidates=final.get("hitl_candidates", []))
+                else:
+                    _dispatch.per_email(notifier, email=email, final=final,
+                                        inbox_base_url=inbox_base_url)
+            except Exception as exc:
+                result.errors.append(f"notify failed for {email.get('message_id','?')}: {exc}")
+        try:
+            _dispatch.run_summary(notifier, result=result)
+        except Exception as exc:
+            result.errors.append(f"run_summary notify failed: {exc}")
         return result
 
     try:

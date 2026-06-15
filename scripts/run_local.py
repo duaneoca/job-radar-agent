@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.config import make_critic_llm, make_llm                # noqa: E402
+from agent.config import make_critic_llm, make_llm, make_notifier  # noqa: E402
 from agent.prompts import SeedPromptProvider                      # noqa: E402
 from agent.reader import ProviderReader                           # noqa: E402
 from agent.runner import run_once                                 # noqa: E402
@@ -57,7 +57,8 @@ def main(argv) -> int:
         res = run_once(
             reader=reader, writer=writer,
             llm=make_llm(), critic_llm=make_critic_llm(),
-            prompts=SeedPromptProvider(),
+            prompts=SeedPromptProvider(), notifier=make_notifier(),
+            inbox_base_url=base.replace("/api", ""),
             environment="local", dry_run=not commit,
         )
     finally:

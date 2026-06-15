@@ -30,6 +30,17 @@ class AgentSettings(BaseSettings):
     daily_spend_ceiling_usd: float = 5.0
     hitl_abandon_minutes: int = 30
 
+    # Notifications
+    notifier: str = "null"               # slack | telegram | discord | null
+    slack_bot_token: str = ""
+    slack_user_channel: str = ""
+    slack_admin_channel: str = ""
+    telegram_bot_token: str = ""
+    telegram_user_chat_id: str = ""
+    telegram_admin_chat_id: str = ""
+    discord_webhook_url: str = ""
+    discord_admin_webhook_url: str = ""
+
 
 settings = AgentSettings()
 
@@ -45,6 +56,25 @@ def make_critic_llm(settings: AgentSettings = settings) -> LLMClient:
     model = settings.critic_model or settings.llm_model
     return LiteLLMClient(settings.llm_provider, model, settings.llm_api_key,
                          langfuse=get_langfuse())
+
+
+def make_notifier(settings: AgentSettings = settings):
+    """Build the configured notifier (defaults to a no-op NullNotifier)."""
+    from notifications.base import NullNotifier
+    kind = (settings.notifier or "null").lower()
+    if kind == "slack" and settings.slack_bot_token:
+        from notifications.slack import SlackNotifier
+        return SlackNotifier(settings.slack_bot_token, settings.slack_user_channel,
+                             settings.slack_admin_channel or None)
+    if kind == "telegram" and settings.telegram_bot_token:
+        from notifications.telegram import TelegramNotifier
+        return TelegramNotifier(settings.telegram_bot_token, settings.telegram_user_chat_id,
+                                settings.telegram_admin_chat_id or None)
+    if kind == "discord" and settings.discord_webhook_url:
+        from notifications.discord import DiscordNotifier
+        return DiscordNotifier(settings.discord_webhook_url,
+                               settings.discord_admin_webhook_url or None)
+    return NullNotifier()
 
 
 def llm_from_config_bundle(bundle: dict) -> LLMClient | None:
