@@ -1,0 +1,14 @@
+# Local self-host. Proton: Bridge runs on the host (host.docker.internal:1143).
+# Gmail: set EMAIL_PROVIDER=gmail and mount credentials.json + token.json (run gmail_auth.py first).
+services:
+  agent:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach Proton Bridge on the host (Linux)
+    volumes:
+      - ./data:/app/data                       # checkpoints / lockfile persistence
+      - ./credentials.json:/app/credentials.json:ro   # Gmail (ignored if using Proton)
+      - ./token.json:/app/token.json                  # Gmail token (writable for refresh)
+    # one-shot instead of the loop:  docker compose run --rm agent python scripts/run_loop.py --once

@@ -18,6 +18,13 @@ from .observability import get_langfuse
 class AgentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Job Radar (writer)
+    jobradar_api_url: str = "https://staging.job-radar.net/api"
+    agent_api_key: str = ""
+
+    # Scheduling (local loop)
+    poll_interval_seconds: int = 900
+
     # LLM (BYOK) — local path
     llm_provider: str = "anthropic"
     llm_model: str = "claude-sonnet-4-6"

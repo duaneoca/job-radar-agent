@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.github/
+tests/
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+*.sqlite
+*.sqlite3
+checkpoints.db
+*.md
