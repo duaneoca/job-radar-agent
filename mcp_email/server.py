@@ -42,7 +42,11 @@ def _get_provider() -> EmailProvider:
         elif settings.email_provider == "gmail":
             from .providers.gmail import GmailProvider
 
-            _provider = GmailProvider()
+            _provider = GmailProvider(
+                token_file=settings.gmail_token_file,
+                credentials_file=settings.gmail_credentials_file,
+                root_folder=folders.root,
+            )
         else:
             raise ValueError(f"unknown EMAIL_PROVIDER: {settings.email_provider}")
     return _provider

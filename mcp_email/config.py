@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     proton_imap_user: str = ""
     proton_imap_password: str = ""
 
+    # Gmail (API/OAuth)
+    gmail_credentials_file: str = "credentials.json"
+    gmail_token_file: str = "token.json"
+
 
 @dataclass(frozen=True)
 class Folders:
