@@ -228,6 +228,29 @@ posting of an email deletes the `inbox_emails` row (mirror existing last-review-
 | `POST /agent/hitl/consume` | `{hitl_id}` | `{ok}` | Poller marks a decision consumed after resuming. |
 | `POST /agent/runs` | run record (§3.4) | `{run_id}` | Operational heartbeat: agent reports each run's outcome + counts. Powers "agent last run / health". Counts only — no subjects/senders. Goes via normal write path (no creds → Cloudflare-fine). |
 
+### 2.1b Cloud enumeration (internal-token, IN-CLUSTER ONLY)
+
+How the single cloud CronJob discovers + processes all users (it does NOT hold per-user
+`X-Agent-Key`s). Auth = shared **`X-Internal-Token`** (the agent authenticates as *itself*, not a
+user); both endpoints in-cluster-only (NetworkPolicy + nginx block, same posture as `/agent/config`).
+
+| Method/Path | Returns | Notes |
+|---|---|---|
+| `GET /agent/cloud/users` | `[{user_id, provider, enabled}]` | **No secrets.** Enabled cloud users with stored creds. |
+| `GET /agent/cloud/config/{user_id}` | `{llm, folders, email_credentials}` | One user's decrypted config (same shape as `/agent/config`). |
+
+**Split enumerate from fetch on purpose** `[H6]`: the runner loops `users` → fetches ONE
+`config/{user_id}` → processes → **discards that user's creds** → next. Never holds all users' secrets
+at once (a bulk "all configs" response would violate H6). One user in memory at a time = blast radius
+of one.
+
+**Cloud write-back auth:** the cloud agent has no per-user `X-Agent-Key` (and JR stores keys hashed —
+can't hand plaintext back). So cloud writes use **`X-Internal-Token` + explicit `user_id`** (`user_id`
+is trustworthy *because* the caller holds the internal token behind the NetworkPolicy). Simplest:
+let the existing `/agent/{inbox,interactions,runs,hitl/*}` write endpoints accept **either**
+`X-Agent-Key` (local → derive user) **or** `X-Internal-Token` + `user_id` (cloud). One set of write
+endpoints, two auth modes.
+
 ### 2.2 Frontend-facing (JWT)
 | Method/Path | Returns |
 |---|---|
