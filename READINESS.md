@@ -42,7 +42,9 @@ Last updated: 2026-06-12.
       newest-first + `newer_than:{days}` query, no attachment/remote fetch). [H5/M1]
 - [ ] **`McpWriter`** (MCP streamable-HTTP → `jobradar-mcp-writer:8001/mcp`, `X-Agent-Key` header).
 - [ ] **Multi-user runner** — per-user creds from `get_config` (in-cluster), per-user lock + error
-      isolation, fetch-per-user-then-discard. [H6/H6a/L3]
+      isolation, fetch-per-user-then-discard; skip users not `enabled`. [H6/H6a/L3]
+- [ ] **GmailProvider from blob** — accept creds from the `get_config` `email_credentials` dict
+      (`Credentials.from_authorized_user_info`), not just `token.json`. Blob shape in SPEC §1.5.
 - [ ] **A-6**: Dockerfile + docker-compose (local) + GHCR image; local scheduling (interval loop/cron).
 - [ ] **JR-5** (job-radar): external ingress for mcp-writer; agent CronJob/Deployment manifests.
 - [ ] **JR-4** (job-radar): Inbox page + Ops dashboard + Email Agent settings (keys/onboarding).

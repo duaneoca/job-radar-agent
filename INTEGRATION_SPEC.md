@@ -105,6 +105,35 @@ A key maps to **exactly one user**. The user is **derived** from the key on ever
 Gmail stores an OAuth **refresh token** here — high value. SHOULD use a separate key tier / KMS
 envelope. Request **minimum** Gmail scope (label add/remove + mark-read); NEVER full mail scope. `[H5]`
 
+**`GET /agent/config` → `email_credentials` decrypted blob shape** (what the agent consumes):
+
+*Gmail (OAuth)* — Google "authorized user" format → agent does `Credentials.from_authorized_user_info`:
+```json
+{ "provider": "gmail", "refresh_token": "<per-user>", "client_id": "<job-radar app>",
+  "client_secret": "<job-radar app>", "token_uri": "https://oauth2.googleapis.com/token",
+  "scopes": ["https://www.googleapis.com/auth/gmail.modify"] }
+```
+- **ONE shared Job Radar OAuth Web client** (`client_id`/`client_secret` app-level). Store only the
+  **per-user `refresh_token`** (+scopes) in `EmailCredential`; merge in the shared client fields when
+  building the config response. No per-user access_token/expiry needed.
+- **Job Radar hosts the OAuth dance** (Web-app client, redirect → consent → callback stores the
+  refresh token). Distinct from the Desktop client the LOCAL self-host path uses (`gmail_auth.py`).
+- Gmail folders are **labels**: the same five folder fields map to nested labels
+  (`<root>/Interaction`, …). UI: relabel "Folder"→"Label" for Gmail. User creates the labels.
+
+*IMAP* (forward-looking — no cloud-IMAP provider built yet; cloud = Gmail-only for now):
+```json
+{ "provider": "imap", "host": "...", "port": 993, "username": "...", "password": "...", "use_ssl": true }
+```
+
+**Local self-host path uses NONE of this** — it reads mailbox creds + folder config from its own
+local `.env` and never calls `/agent/config` `[H6a]`.
+
+### 1.5a Per-user agent enablement (cloud)
+`email_credentials` (or a small per-user agent-settings row) carries an **`enabled` flag**. The cloud
+runner iterates users who have credentials AND `enabled=true`. **No per-user schedule** — cadence is
+the single global k8s CronJob. `[D21 / §2.2a]`
+
 ### 1.9 Three key types — do NOT conflate
 | Key | Purpose | Storage | Reuse? |
 |---|---|---|---|
