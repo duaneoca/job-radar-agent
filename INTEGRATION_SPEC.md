@@ -21,8 +21,27 @@
 | Inbox UI + Ops dashboard | job-radar | Human review surface + business metrics |
 
 **Hard boundary:** the agent NEVER touches the Job Radar database directly. All reads/writes go
-through the Writer MCP → tracker-api. The agent NEVER creates `Job` or `UserJobReview` rows
-(job creation happens later via the existing bookmarklet `POST /jobs/manual`).
+through the Writer MCP → tracker-api (cloud) or the equivalent REST `/agent/*` endpoints (local).
+The agent NEVER creates `Job` or `UserJobReview` rows (job creation happens later via the existing
+bookmarklet `POST /jobs/manual`).
+
+### 0.1 Two MCP servers, two write transports — rationale
+
+There are **two MCP servers** (this hasn't changed): Server 1 (Email Reader, stdio, consumed by the
+agent) and Server 2 (Job Radar Writer, consumed by the agent to write back). What's topology-specific
+is **how the agent reaches Server 2**, because Server 2 runs in-cluster and is **not exposed to the
+public internet** (by choice — it can reach `/agent/config`'s decrypted creds, so keeping it
+in-cluster-only is safer, and the REST surface already exists).
+
+| Agent topology | Reaches Job Radar via | Why |
+|---|---|---|
+| **cloud** (in-cluster) | **Server 2 MCP** at `http://jobradar-mcp-writer:8001/mcp` | in-cluster ⇒ reachable; MCP as designed |
+| **local** (outside cluster) | **REST** `/api/agent/*` (`X-Agent-Key`) | can't reach an in-cluster service; we don't expose the writer publicly; REST already exists and hits the SAME `/agent/*` contract |
+
+So MCP is **not** removed — Server 2 is consumed via MCP on the cloud path; the local path uses REST
+as a transport to the identical endpoints. Consequently **no external `mcp-writer` ingress is needed**
+for either path. (Note: Server 1 is published + works, but the runtime currently reads via the
+provider directly — consuming Server 1 over stdio via an `McpReaderClient` is a deferred item.)
 
 ---
 
