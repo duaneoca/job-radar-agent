@@ -244,12 +244,17 @@ user); both endpoints in-cluster-only (NetworkPolicy + nginx block, same posture
 at once (a bulk "all configs" response would violate H6). One user in memory at a time = blast radius
 of one.
 
-**Cloud write-back auth:** the cloud agent has no per-user `X-Agent-Key` (and JR stores keys hashed —
-can't hand plaintext back). So cloud writes use **`X-Internal-Token` + explicit `user_id`** (`user_id`
-is trustworthy *because* the caller holds the internal token behind the NetworkPolicy). Simplest:
-let the existing `/agent/{inbox,interactions,runs,hitl/*}` write endpoints accept **either**
-`X-Agent-Key` (local → derive user) **or** `X-Internal-Token` + `user_id` (cloud). One set of write
-endpoints, two auth modes.
+**Cloud per-user auth (reads AND writes):** the cloud agent has no per-user `X-Agent-Key` (and JR
+stores keys hashed — can't hand plaintext back). So cloud calls use **`X-Internal-Token` + explicit
+`user_id`** (`user_id` is trustworthy *because* the caller holds the internal token behind the
+NetworkPolicy). Rule: **every per-user operational endpoint accepts EITHER auth mode** —
+`X-Agent-Key` (local → derive user) **or** `X-Internal-Token` + `user_id` (cloud):
+- **read:** `GET /agent/reviews` (needed for matching/dedup — fetched per user at match time, NOT
+  bundled into `cloud/config`)
+- **write:** `POST /agent/{inbox, interactions, runs, hitl/register, hitl/consume}`
+
+Only enumeration (`/agent/cloud/users`) and the creds bootstrap (`/agent/cloud/config/{user_id}`)
+are cloud-specific endpoints; everything else is the existing per-user endpoint with dual auth.
 
 ### 2.2 Frontend-facing (JWT)
 | Method/Path | Returns |
