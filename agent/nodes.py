@@ -18,6 +18,7 @@ import uuid
 from typing import Any
 
 from . import matching
+from .links import clean_link
 from .llm import LLMClient
 from .prompts import PromptProvider, wrap_email
 from .reader import EmailReaderClient
@@ -128,7 +129,7 @@ class Nodes:
         for p in postings:
             m = matching.match(p.company, p.role, reviews)
             payload_postings.append({
-                "company": p.company, "role": p.role, "link": p.link,
+                "company": p.company, "role": p.role, "link": clean_link(p.link),
                 "action_required": p.action_required,
                 "possible_duplicate": m.best is not None,
                 "matched_review_id": (m.best or {}).get("review_id"),

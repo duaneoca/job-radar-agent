@@ -306,6 +306,7 @@ reachable. Cloudflare→origin TLS Full (Strict). `[H3]`
 | H6 | **Decrypted-credential transit & handling** — `GET /agent/config` returns plaintext secrets. TLS-only; agent holds them ephemerally in memory only (never log, never write to disk/checkpoint); minimize lifetime; endpoint rate-limited + audit-logged. **Cloud multi-user:** per-user isolation so one run's compromise ≠ all users' keys; consider not holding all users' creds simultaneously (fetch-per-user, discard after). | both |
 | H6a | **Decrypted creds never traverse Cloudflare.** Cloud agents call `GET /agent/config` **in-cluster** (`http://tracker-api`), bypassing the Cloudflare TLS-termination edge. **Local agents don't call it at all** — they use local `.env` creds (the owner's own LLM key + Proton creds; Gmail tokens for cloud users stay in-cluster). Result/telemetry data (inbox writes, `POST /agent/runs`) carries no creds, so it uses the normal Cloudflare path. **Enforced (2026-06-12):** job-radar gates `/agent/config` to in-cluster only; the other `/agent/*` endpoints stay externally reachable via `X-Agent-Key`. | both |
 | M1/M2 | No attachment parsing, no remote content fetch, agent never dereferences links | agent |
+| L5 | Posting links extracted from email: scheme-allowlisted agent-side (`clean_link`, http/https only) before send AND re-validated by job-radar at write+render (C2); never dereferenced (M2); residual phishing-on-click mitigated by human review + showing host | both |
 
 ---
 

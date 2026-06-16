@@ -26,6 +26,11 @@ pick the closest but set confidence below 0.5 so it routes to human review rathe
 Extraction rules:
 - recruiter_outreach / job_alert: populate `postings` with {company, role, link, action_required}.
   A job_alert may contain MANY postings — extract each distinct one.
+  `link`: the posting's URL. **Must be a full absolute URL starting with `https://` or `http://`**
+  (include the scheme and host). Prefer the **specific per-posting** apply/view URL. If a posting has
+  no usable absolute URL, use the email's general "view all jobs" / "see more" absolute link as a
+  fallback (better than nothing). If you only have a bare domain, a relative path, or no URL, set
+  `link` to null — do NOT invent one. Copy the URL verbatim from the email; never fetch or follow it.
 - application_confirmation: populate `interaction` with {company, role, new_status, summary}.
   new_status is one of applied|interviewing|offer|rejected, or null if the email is activity with
   no real status change (reminder, reschedule, generic "thanks"). Map: application received→applied;

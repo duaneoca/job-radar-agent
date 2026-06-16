@@ -199,6 +199,15 @@ admins. Webhook URLs are bearer secrets. Treat as secrets; prefer scoped tokens 
 - **L3 — Multi-tenant blast radius (cloud CronJob).** One poison email for user A must not abort the
   run for others. Per-user try/except isolation + per-user locks.
 - **L4 — GHCR image hygiene.** No secrets baked in; pin base images; optionally cosign-sign.
+- **L5 — Posting links extracted from email (refines C2/M2).** The agent now extracts posting URLs
+  from attacker-controlled email and stores them for the user to click. Handling: scheme-allowlisted
+  **agent-side** (`agent/links.py` `clean_link` — only absolute http/https; drops
+  javascript:/data:/file:/mailto:/relative; one safe `www.`→`https://` coercion) AND re-validated by
+  job-radar at write + render (C2). The agent **never dereferences** the URL (M2) — extract-verbatim
+  only; no fetch/expand/redirect-follow. Residual: **phishing on click** (a malicious email could
+  surface a lookalike link) — mitigated by human review (nothing auto-opens) and the inbox UI showing
+  the link host. Note links are often tracking/redirect URLs (e.g. LinkedIn `?otpToken=`); surfaced
+  verbatim, host visible.
 
 ---
 
