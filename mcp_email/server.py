@@ -103,11 +103,12 @@ def get_email_by_id(message_id: str) -> dict | None:
 
 
 @mcp.tool()
-def move_and_mark(message_id: str, destination: str) -> dict:
+def move_and_mark(message_id: str, destination: str, mark_read: bool = True) -> dict:
     """
-    Atomically mark an email read AND move it to one of the Job Radar subfolders
-    (interaction | postings | social | unprocessed). This is the only mutating action; it never
-    deletes mail. `destination` is a logical name, validated against the configured layout.
+    Move an email to one of the Job Radar subfolders (interaction | postings | social | unprocessed),
+    optionally marking it read. `mark_read=False` leaves it UNREAD (used for interaction mail so
+    high-value items stay visibly unread). The only mutating action; never deletes mail.
+    `destination` is a logical name, validated against the configured layout.
     """
     dest_map = {
         "interaction": folders.interaction,
@@ -120,8 +121,8 @@ def move_and_mark(message_id: str, destination: str) -> dict:
             f"invalid destination '{destination}'; expected one of {sorted(dest_map)}"
         )
     provider = _get_provider()
-    provider.move_and_mark(message_id, dest_map[destination])
-    return {"moved": message_id, "to": dest_map[destination]}
+    provider.move_and_mark(message_id, dest_map[destination], mark_read=mark_read)
+    return {"moved": message_id, "to": dest_map[destination], "marked_read": mark_read}
 
 
 def main() -> None:

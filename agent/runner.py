@@ -60,7 +60,8 @@ class _NoMoveReader:
     def get_unread(self):  # type: ignore[override]
         return self._inner.get_unread()
 
-    def move_and_mark(self, message_id: str, destination: Destination) -> None:
+    def move_and_mark(self, message_id: str, destination: Destination,
+                      mark_read: bool = True) -> None:
         self.intended_moves.append((message_id, destination))
 
 

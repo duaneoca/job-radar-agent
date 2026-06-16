@@ -155,7 +155,7 @@ class ProtonProvider(EmailProvider):
         return None
 
     # ── the one mutation: mark-read + move (never delete) ─────
-    def move_and_mark(self, message_id: str, dest_folder: str) -> None:
+    def move_and_mark(self, message_id: str, dest_folder: str, mark_read: bool = True) -> None:
         conn = self._imap()
         # locate the message's current folder + uid
         for folder in self.list_folders():
@@ -164,7 +164,8 @@ class ProtonProvider(EmailProvider):
             uid = self._find_uid(message_id)
             if not uid:
                 continue
-            conn.uid("STORE", uid, "+FLAGS", "(\\Seen)")
+            if mark_read:
+                conn.uid("STORE", uid, "+FLAGS", "(\\Seen)")
             # Prefer atomic MOVE (RFC 6851)
             typ, _ = conn.uid("MOVE", uid, self._quote(dest_folder))
             if typ == "OK":

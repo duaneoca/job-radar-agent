@@ -207,8 +207,13 @@ class Nodes:
         }
 
     def finalize(self, state: AgentState) -> dict[str, Any]:
-        """The single mutation point: move the email if a destination was chosen."""
+        """The single mutation point: move the email if a destination was chosen.
+
+        Interactions are left UNREAD so high-value items (interview invites, recruiter replies) stay
+        visibly unread in the Interaction folder; everything else is marked read.
+        """
         dest = state.get("destination")
         if dest:
-            self.reader.move_and_mark(state["email"]["message_id"], dest)
+            self.reader.move_and_mark(state["email"]["message_id"], dest,
+                                      mark_read=(dest != "interaction"))
         return {}

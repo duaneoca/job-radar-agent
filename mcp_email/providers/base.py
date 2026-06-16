@@ -59,10 +59,13 @@ class EmailProvider(ABC):
         """Fetch one message by its RFC 822 Message-ID. None if not found."""
 
     @abstractmethod
-    def move_and_mark(self, message_id: str, dest_folder: str) -> None:
+    def move_and_mark(self, message_id: str, dest_folder: str, mark_read: bool = True) -> None:
         """
-        Atomically mark the message \\Seen AND move it to `dest_folder`.
-        This is the ONLY mutating operation. It never deletes the message — moving relocates it.
+        Move the message to `dest_folder`, optionally marking it read.
+        `mark_read=True` (default) marks \\Seen + moves; `mark_read=False` leaves it UNREAD (used for
+        the Interaction folder, so high-value interactions stay visibly unread). The only mutating
+        operation; never deletes — moving relocates. (Safe: moved mail leaves the scanned root folder,
+        so unread-after-move is never reprocessed.)
         """
 
     def close(self) -> None:  # optional cleanup hook

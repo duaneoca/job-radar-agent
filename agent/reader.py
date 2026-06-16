@@ -17,8 +17,9 @@ class EmailReaderClient(Protocol):
         """Unread mail in the configured root folder."""
         ...
 
-    def move_and_mark(self, message_id: str, destination: Destination) -> None:
-        """Atomically mark read + move to a logical subfolder. The only mutation."""
+    def move_and_mark(self, message_id: str, destination: Destination,
+                      mark_read: bool = True) -> None:
+        """Move to a logical subfolder, optionally marking read. The only mutation."""
         ...
 
 
@@ -47,17 +48,21 @@ class ProviderReader:
             })
         return out
 
-    def move_and_mark(self, message_id: str, destination: Destination) -> None:
-        self._p.move_and_mark(message_id, self._dest[destination])
+    def move_and_mark(self, message_id: str, destination: Destination,
+                      mark_read: bool = True) -> None:
+        self._p.move_and_mark(message_id, self._dest[destination], mark_read=mark_read)
 
 
 class FakeReader:
     def __init__(self, unread: list[EmailRef] | None = None):
         self._unread = unread or []
         self.moves: list[tuple[str, str]] = []
+        self.mark_reads: list[bool] = []
 
     def get_unread(self) -> list[EmailRef]:
         return list(self._unread)
 
-    def move_and_mark(self, message_id: str, destination: Destination) -> None:
+    def move_and_mark(self, message_id: str, destination: Destination,
+                      mark_read: bool = True) -> None:
         self.moves.append((message_id, destination))
+        self.mark_reads.append(mark_read)

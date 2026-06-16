@@ -90,16 +90,17 @@ class GmailProvider(EmailProvider):
         return self._fetch(ids[0], self._root) if ids else None
 
     # ── the one mutation: label swap + mark read (never send/trash) ──
-    def move_and_mark(self, message_id: str, dest_folder: str) -> None:
+    def move_and_mark(self, message_id: str, dest_folder: str, mark_read: bool = True) -> None:
         svc = self._service()
         resp = svc.users().messages().list(
             userId="me", q=f"rfc822msgid:{message_id}", maxResults=1).execute()
         ids = [m["id"] for m in resp.get("messages", [])]
         if not ids:
             raise LookupError(f"message not found: {message_id}")
+        remove = [self._label_id(self._root)] + (["UNREAD"] if mark_read else [])
         svc.users().messages().modify(userId="me", id=ids[0], body={
             "addLabelIds": [self._label_id(dest_folder)],
-            "removeLabelIds": [self._label_id(self._root), "UNREAD"],
+            "removeLabelIds": remove,
         }).execute()
 
     # ── parsing ───────────────────────────────────────────────

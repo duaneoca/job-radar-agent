@@ -144,6 +144,14 @@ def test_finalize_moves_email():
     nodes, _, reader = make_nodes([], [])
     nodes.finalize({"email": email(), "destination": "postings"})
     assert reader.moves == [("<m1@x>", "postings")]
+    assert reader.mark_reads == [True]              # non-interaction → marked read
+
+
+def test_finalize_leaves_interaction_unread():
+    nodes, _, reader = make_nodes([], [])
+    nodes.finalize({"email": email(), "destination": "interaction"})
+    assert reader.moves == [("<m1@x>", "interaction")]
+    assert reader.mark_reads == [False]             # interaction → left UNREAD
 
 
 # ── full graph runs ───────────────────────────────────────────

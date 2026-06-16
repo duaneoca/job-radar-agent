@@ -137,6 +137,17 @@ def test_move_and_mark_sets_seen_then_moves():
     assert moves, "move_and_mark must relocate the message"
 
 
+def test_move_and_mark_can_leave_unread():
+    fake = _FakeIMAP()
+    p = _provider_with_fake(fake)
+    p.move_and_mark("<m1@x>", "Folders/Hire Duane/Interaction", mark_read=False)
+    seen_stores = [a for c, a in fake.commands
+                   if c == "STORE" and "\\Seen" in " ".join(map(str, a))]
+    moves = [c for c, _ in fake.commands if c in ("MOVE", "COPY")]
+    assert seen_stores == [], "mark_read=False must NOT set \\Seen"
+    assert moves, "must still relocate the message"
+
+
 # ── age cutoff + newest-first + limit ─────────────────────────
 
 def test_imap_date_format():
