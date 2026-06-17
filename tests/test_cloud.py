@@ -67,8 +67,8 @@ def test_skips_disabled_and_processes_enabled(monkeypatch):
     # avoid building real providers/llm: stub build_user_components
     import agent.cloud as cloudmod
     monkeypatch.setattr(cloudmod, "build_user_components",
-                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(),
-                                                        critic_llm=object(), close=lambda: None))
+                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(), critic_llm=object(),
+                                                        user_notifier=FakeNotifier(), close=lambda: None))
     s = cloud_run(cc, base_url="https://x/api", internal_token="t", prompts=None,
                   run_once_fn=fake_run_once)
     assert s["users"] == 1                       # only u1 (enabled)
@@ -82,9 +82,8 @@ def test_per_user_isolation_and_creds_discarded(monkeypatch):
     closed = []
     import agent.cloud as cloudmod
     monkeypatch.setattr(cloudmod, "build_user_components",
-                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(),
-                                                        critic_llm=object(),
-                                                        close=lambda: closed.append(1)))
+                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(), critic_llm=object(),
+                                                        user_notifier=FakeNotifier(), close=lambda: closed.append(1)))
     s = cloud_run(cc, base_url="https://x/api", internal_token="t", prompts=None,
                   run_once_fn=lambda **kw: _res())
     assert s["users"] == 2
@@ -149,9 +148,33 @@ def test_total_email_budget_stops_run(monkeypatch):
     cc = _FakeConfigClient(users, {f"u{i}": _cfg() for i in range(5)})
     import agent.cloud as cloudmod
     monkeypatch.setattr(cloudmod, "build_user_components",
-                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(),
-                                                        critic_llm=object(), close=lambda: None))
+                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(), critic_llm=object(),
+                                                        user_notifier=FakeNotifier(), close=lambda: None))
     s = cloud_run(cc, base_url="https://x/api", internal_token="t", prompts=None,
                   max_total_emails=2, run_once_fn=lambda **kw: _res(processed=1))
     assert s["stopped"] and "budget" in s["stopped"]
     assert s["processed"] == 2
+
+
+def test_per_user_slack_built_from_config_else_null():
+    from agent.cloud import build_user_components
+    from notifications.base import NullNotifier
+    base_cfg = {"folders": {"root": "R", "interaction": "I", "postings": "P",
+                            "social": "S", "unprocessed": "U"},
+                "email_credentials": {"provider": "gmail", "refresh_token": "rt"},
+                "llm": {"provider": "google", "preferred_model": "gemini/x", "api_key": "k"}}
+    # with slack block → SlackNotifier
+    with_slack = {**base_cfg, "slack": {"bot_token": "xoxb-1", "channel_id": "C123"}}
+    c1 = build_user_components(with_slack, "u1", base_url="https://x/api", internal_token="t",
+                               since_days=14, limit=100)
+    try:
+        assert type(c1.user_notifier).__name__ == "SlackNotifier"
+    finally:
+        c1.close()
+    # no slack block → NullNotifier (no per-user pings)
+    c2 = build_user_components(base_cfg, "u2", base_url="https://x/api", internal_token="t",
+                               since_days=14, limit=100)
+    try:
+        assert isinstance(c2.user_notifier, NullNotifier)
+    finally:
+        c2.close()

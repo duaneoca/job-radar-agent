@@ -108,3 +108,13 @@ def test_slack_builds_blocks_and_routes_admin(monkeypatch):
 
 def test_null_notifier_is_noop():
     NullNotifier().send(Notification("user", "x"))  # must not raise
+
+
+def test_routing_notifier_splits_user_and_admin():
+    from notifications.base import RoutingNotifier, FakeNotifier as FN, Notification as N
+    user, admin = FN(), FN()
+    r = RoutingNotifier(user, admin)
+    r.send(N("user", "ping"))
+    r.send(N("admin", "alert"))
+    assert [m.title for m in user.sent] == ["ping"]
+    assert [m.title for m in admin.sent] == ["alert"]

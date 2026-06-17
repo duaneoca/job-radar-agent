@@ -22,7 +22,7 @@ from .config import llm_from_config_bundle
 from .reader import ProviderReader
 from .runner import run_once
 from .writer_rest import RestWriter
-from notifications.base import Notification, NullNotifier
+from notifications.base import Notification, NullNotifier, RoutingNotifier
 
 CIRCUIT_BREAK = 3   # consecutive per-user failures ⇒ assume systemic, stop
 
@@ -56,6 +56,7 @@ class _UserComponents:
     writer: Any
     llm: Any
     critic_llm: Any
+    user_notifier: Any                      # the user's own Slack (or Null if not connected)
     close: Callable[[], None]
 
 
@@ -95,8 +96,16 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
     if llm is None or critic_llm is None:
         raise ValueError("no LLM key in config for user")
 
+    # The user's own Slack (per-user) for user-facing pings; Null if they haven't connected one.
+    slack = cfg.get("slack") or {}
+    if slack.get("bot_token") and slack.get("channel_id"):
+        from notifications.slack import SlackNotifier
+        user_notifier = SlackNotifier(slack["bot_token"], user_channel=slack["channel_id"])
+    else:
+        user_notifier = NullNotifier()
+
     def _close():
-        for obj in (provider, writer):
+        for obj in (provider, writer, user_notifier):
             if hasattr(obj, "close"):
                 try:
                     obj.close()
@@ -104,7 +113,7 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
                     pass
 
     return _UserComponents(reader=reader, writer=writer, llm=llm,
-                           critic_llm=critic_llm, close=_close)
+                           critic_llm=critic_llm, user_notifier=user_notifier, close=_close)
 
 
 def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token: str,
@@ -125,10 +134,12 @@ def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token
             cfg = config_client.config(uid)
             comp = build_user_components(cfg, uid, base_url=base_url, internal_token=internal_token,
                                          since_days=since_days, limit=limit)
+            # user pings → the user's own Slack; admin/ops → the shared notifier. Suppress on dry-run.
+            per_user_notifier = NullNotifier() if dry_run else RoutingNotifier(comp.user_notifier, notifier)
             try:
                 res = run_once_fn(
                     reader=comp.reader, writer=comp.writer, llm=comp.llm,
-                    critic_llm=comp.critic_llm, prompts=prompts, notifier=NullNotifier(),
+                    critic_llm=comp.critic_llm, prompts=prompts, notifier=per_user_notifier,
                     environment="cloud", dry_run=dry_run, use_lock=False,
                     spend_key=uid, daily_ceiling=daily_ceiling, spend_store=spend_store,
                 )

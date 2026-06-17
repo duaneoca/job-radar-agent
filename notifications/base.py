@@ -47,3 +47,26 @@ class FakeNotifier:
 
     def send(self, n: Notification) -> None:
         self.sent.append(n)
+
+
+class RoutingNotifier:
+    """
+    Routes by audience: `user` notifications to one notifier (e.g. the user's own Slack), `admin`
+    to another (the shared ops sink). Used in the cloud path where user vs ops may be different
+    Slack workspaces/tokens, so a single SlackNotifier can't serve both.
+    """
+
+    def __init__(self, user: Notifier, admin: Notifier):
+        self._user = user
+        self._admin = admin
+
+    def send(self, n: Notification) -> None:
+        (self._admin if n.audience == "admin" else self._user).send(n)
+
+    def close(self) -> None:
+        for nt in (self._user, self._admin):
+            if hasattr(nt, "close"):
+                try:
+                    nt.close()
+                except Exception:
+                    pass
