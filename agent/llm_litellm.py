@@ -55,6 +55,10 @@ class LiteLLMClient:
         self._api_key = api_key
         self._temperature = temperature
         self._lf = langfuse                      # optional Langfuse client; None = no tracing
+        self.run_cost = 0.0                      # $ accrued since last reset_cost() — H4 budget
+
+    def reset_cost(self) -> None:
+        self.run_cost = 0.0
 
     def structured(self, *, system: str, user: str, schema: type[T]) -> T:
         import litellm
@@ -80,6 +84,10 @@ class LiteLLMClient:
             )
             content = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)
+            try:
+                self.run_cost += float(litellm.completion_cost(completion_response=resp) or 0.0)
+            except Exception:
+                pass  # unknown model / pricing → best-effort, don't fail the call
             gen.finish(
                 output=content,
                 usage={"input": getattr(usage, "prompt_tokens", None),

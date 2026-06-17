@@ -102,6 +102,9 @@ def run_once(
     dry_run: bool = False,
     use_lock: bool = True,
     lock_path: str = "/tmp/job-radar-agent.lock",
+    spend_key: str = "local",
+    daily_ceiling: float | None = None,
+    spend_store=None,
 ) -> RunResult:
     from notifications import dispatch as _dispatch
     from notifications.base import NullNotifier
@@ -109,6 +112,9 @@ def run_once(
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     lf = get_langfuse()
+
+    def _run_cost() -> float:
+        return getattr(llm, "run_cost", 0.0) + getattr(critic_llm, "run_cost", 0.0)
 
     def _go() -> RunResult:
         result = RunResult()
@@ -118,7 +124,22 @@ def run_once(
                       reader=eff_reader, prompts=prompts)
         app = build_graph(nodes)
 
+        # H4 daily spend ceiling — refuse the run if already over, then enforce per-email.
+        enforce_budget = daily_ceiling is not None and spend_store is not None
+        already = spend_store.spent_today(spend_key) if enforce_budget else 0.0
+        if enforce_budget and already >= daily_ceiling:
+            result.status = "partial"
+            result.errors.append(f"daily spend ceiling reached (${already:.2f} ≥ ${daily_ceiling:.2f}) — skipped")
+            return result
+        for c in (llm, critic_llm):
+            if hasattr(c, "reset_cost"):
+                c.reset_cost()
+
         for email in reader.get_unread():
+            if enforce_budget and already + _run_cost() >= daily_ceiling:
+                result.status = "partial"
+                result.errors.append(f"daily spend ceiling reached mid-run (${already + _run_cost():.2f}) — halting")
+                break
             try:
                 with email_trace(lf, message_id=email.get("message_id", "?"),
                                  subject=email.get("subject", "")) as span:
@@ -161,6 +182,11 @@ def run_once(
                                         inbox_base_url=inbox_base_url)
             except Exception as exc:
                 result.errors.append(f"notify failed for {email.get('message_id','?')}: {exc}")
+        if enforce_budget and not dry_run:
+            try:
+                spend_store.add(spend_key, _run_cost())
+            except Exception as exc:
+                result.errors.append(f"spend persist failed: {exc}")
         try:
             _dispatch.run_summary(notifier, result=result)
         except Exception as exc:

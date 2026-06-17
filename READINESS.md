@@ -52,8 +52,9 @@ Last updated: 2026-06-12.
       the path. (Optionally revive if Server 2 should be consumed via MCP.)
 - [ ] **`McpReaderClient`** — consume Server 1 (Email Reader) via stdio so an MCP server is genuinely
       consumed at runtime (portfolio). Currently runtime reads via the provider directly.
-- [ ] **Cost/DoS caps** — per-run email cap ✅ + cloud-run total-email budget ✅; **daily $ ceiling +
-      token budget still TODO** (needs a spend counter / Langfuse cost read). [H4]
+- [x] **Cost/DoS caps** — per-run email cap + cloud-run total-email budget + **daily $ spend ceiling**
+      (`agent/budget.py` `DailySpendStore`, per-user, persisted; enforced in `run_once` — skips run if
+      over, halts mid-run, persists accrued cost). litellm `completion_cost` per call. [H4]
 - [ ] **`SLACK_SIGNING_SECRET`** on job-radar; wire HITL resume (poller + LangGraph interrupt).
 - [ ] **Multi-user E2E test** on staging (you + a friend's Gmail) before opening up.
 - [ ] Confirm per-user data isolation (IDOR/H1) holds with 2+ real users.

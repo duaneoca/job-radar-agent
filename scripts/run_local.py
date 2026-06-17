@@ -62,12 +62,16 @@ def main(argv) -> int:
     mode = "COMMIT" if commit else "DRY-RUN"
     print(f"=== {mode} — {folders.root} → {base} (model {os.environ.get('LLM_MODEL')}) ===")
     try:
+        from agent.budget import DailySpendStore
+        from agent.config import settings as agent_settings
         res = run_once(
             reader=reader, writer=writer,
             llm=make_llm(), critic_llm=make_critic_llm(),
             prompts=SeedPromptProvider(), notifier=make_notifier(),
             inbox_base_url=base.replace("/api", ""),
             environment="local", dry_run=not commit,
+            spend_key="local", daily_ceiling=agent_settings.daily_spend_ceiling_usd,
+            spend_store=DailySpendStore(),
         )
     finally:
         provider.close()

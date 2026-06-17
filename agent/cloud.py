@@ -97,6 +97,7 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
 def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token: str,
               prompts, notifier=None, since_days: int | None = 14, limit: int | None = 100,
               max_total_emails: int = 1000, dry_run: bool = False,
+              daily_ceiling: float | None = None, spend_store=None,
               run_once_fn=run_once) -> dict[str, Any]:
     notifier = notifier or NullNotifier()
     summary = {"users": 0, "processed": 0, "escalations": 0, "errors": [], "stopped": None}
@@ -116,6 +117,7 @@ def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token
                     reader=comp.reader, writer=comp.writer, llm=comp.llm,
                     critic_llm=comp.critic_llm, prompts=prompts, notifier=NullNotifier(),
                     environment="cloud", dry_run=dry_run, use_lock=False,
+                    spend_key=uid, daily_ceiling=daily_ceiling, spend_store=spend_store,
                 )
             finally:
                 comp.close()                       # discard this user's creds before the next

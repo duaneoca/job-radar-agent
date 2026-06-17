@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from agent.budget import DailySpendStore               # noqa: E402
 from agent.cloud import CloudConfigClient, cloud_run   # noqa: E402
 from agent.config import make_notifier, settings        # noqa: E402
 from agent.prompts import SeedPromptProvider            # noqa: E402
@@ -38,6 +39,7 @@ def main(argv) -> int:
             prompts=SeedPromptProvider(), notifier=make_notifier(),
             since_days=email_settings.max_email_age_days if email_settings.max_email_age_days > 0 else None,
             limit=email_settings.max_emails_per_run, dry_run=dry_run,
+            daily_ceiling=settings.daily_spend_ceiling_usd, spend_store=DailySpendStore(),
         )
     finally:
         cc.close()
