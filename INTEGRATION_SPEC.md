@@ -191,6 +191,8 @@ preferred_model, api_key}` bundle (per D2/Q5). Handling rules: `[H6]`.
 | retries | int | |
 | error_summary | text null | populated on `failed`/`partial` |
 
+**Finalization:** the agent always posts a terminal record (status + `finished_at`) even on crash/SIGTERM (run_once `finally`; run_cloud converts SIGTERM→clean exit). A hard SIGKILL/OOM can't be finalized agent-side — **job-radar SHOULD reap records with `finished_at` NULL older than the run deadline** (mark `failed`/`expired`).
+
 Counts only — NO subjects/senders (content lives in `inbox_emails`). Latest row per user = the
 dashboard's "agent last run / health" (recent `finished_at` + `success` ⇒ healthy; nothing in >2
 intervals ⇒ stale/down). LLM cost/latency are NOT here — they live in Langfuse (§6).

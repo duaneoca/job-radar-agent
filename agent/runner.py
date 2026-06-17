@@ -195,6 +195,7 @@ def run_once(
             result.errors.append(f"run_summary notify failed: {exc}")
         return result
 
+    result: RunResult | None = None
     try:
         if use_lock:
             with run_lock(lock_path):
@@ -202,19 +203,25 @@ def run_once(
         else:
             result = _go()
     except LockHeld:
-        return RunResult(skipped=True)
+        result = RunResult(skipped=True)
     except Exception as exc:
         result = RunResult(status="failed", errors=[f"{type(exc).__name__}: {exc}"])
-
-    finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    if not dry_run:
-        try:
-            writer.report_run(result.as_run_record(environment, agent_version, started, finished))
-        except Exception as exc:
-            result.errors.append(f"report_run failed: {exc}")
-    if lf is not None:
-        try:
-            lf.flush()
-        except Exception:
-            pass
+    finally:
+        # ALWAYS finalize so a run never dangles. Covers clean exceptions AND BaseException
+        # (SystemExit/KeyboardInterrupt, e.g. SIGTERM converted by run_cloud) — finally runs then the
+        # exception keeps propagating. A hard SIGKILL/OOM still can't be finalized here (→ job-radar
+        # should reap records with no finished_at past the run deadline).
+        if result is None:
+            result = RunResult(status="failed", errors=["interrupted before completion"])
+        if not result.skipped and not dry_run:
+            finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            try:
+                writer.report_run(result.as_run_record(environment, agent_version, started, finished))
+            except Exception as exc:
+                result.errors.append(f"report_run failed: {exc}")
+        if lf is not None:
+            try:
+                lf.flush()
+            except Exception:
+                pass
     return result

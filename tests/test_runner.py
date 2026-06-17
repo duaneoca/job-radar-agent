@@ -109,3 +109,19 @@ def test_run_once_skips_when_locked(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_crash_still_records_failed_run_with_finished_at():
+    # A reader that blows up mid-run must NOT leave the run dangling — a terminal record is posted.
+    class _BoomReader:
+        def get_unread(self):
+            raise RuntimeError("scan exploded")
+        def move_and_mark(self, *a, **k):  # pragma: no cover
+            pass
+    writer = FakeWriter()
+    res = run_once(reader=_BoomReader(), writer=writer, prompts=PROMPTS, use_lock=False,
+                   llm=FakeLLM([]), critic_llm=FakeLLM([]))
+    assert res.status == "failed"
+    assert len(writer.runs) == 1                       # a record WAS posted
+    rec = writer.runs[0]
+    assert rec["status"] == "failed" and rec["finished_at"]   # terminal + finished_at set
