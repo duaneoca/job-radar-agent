@@ -17,14 +17,26 @@ import httpx
 
 
 class RestWriter:
-    def __init__(self, base_url: str, agent_key: str, timeout: float = 30.0):
-        # base_url e.g. https://staging.job-radar.net/api
+    """
+    Two auth modes:
+      • LOCAL: `agent_key` → `X-Agent-Key` (server derives user).
+      • CLOUD: `internal_token` + `user_id` → `X-Internal-Token` + `X-User-Id` (in-cluster batch
+        processor acting on behalf of a user; SPEC §2.1b).
+    """
+
+    def __init__(self, base_url: str, agent_key: str | None = None, timeout: float = 30.0,
+                 internal_token: str | None = None, user_id: str | None = None):
         self._base = base_url.rstrip("/")
-        self._client = httpx.Client(
-            base_url=self._base,
-            headers={"X-Agent-Key": agent_key, "Content-Type": "application/json"},
-            timeout=timeout,
-        )
+        headers = {"Content-Type": "application/json"}
+        if internal_token:
+            headers["X-Internal-Token"] = internal_token
+            if user_id:
+                headers["X-User-Id"] = str(user_id)
+        elif agent_key:
+            headers["X-Agent-Key"] = agent_key
+        else:
+            raise ValueError("RestWriter needs agent_key OR internal_token")
+        self._client = httpx.Client(base_url=self._base, headers=headers, timeout=timeout)
 
     def close(self) -> None:
         self._client.close()

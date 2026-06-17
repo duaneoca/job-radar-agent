@@ -33,10 +33,11 @@ def _b64(data: str | None) -> str:
 
 class GmailProvider(EmailProvider):
     def __init__(self, token_file: str = "token.json", credentials_file: str = "credentials.json",
-                 root_folder: str = "Hire Duane"):
+                 root_folder: str = "Hire Duane", creds_info: dict | None = None):
         self._token_file = token_file
         self._creds_file = credentials_file
         self._root = root_folder
+        self._creds_info = creds_info   # cloud path: authorized-user dict from /agent/cloud/config
         self._svc = None
         self._label_ids: dict[str, str] | None = None   # name → id
 
@@ -46,11 +47,18 @@ class GmailProvider(EmailProvider):
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request
             from googleapiclient.discovery import build
-            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                with open(self._token_file, "w") as f:
-                    f.write(creds.to_json())
+            if self._creds_info is not None:
+                # cloud: build from the config blob (refresh handled in-memory, never written back)
+                creds = Credentials.from_authorized_user_info(self._creds_info, SCOPES)
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+            else:
+                # local self-host: token.json file (refreshed token persisted)
+                creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    with open(self._token_file, "w") as f:
+                        f.write(creds.to_json())
             self._svc = build("gmail", "v1", credentials=creds, cache_discovery=False)
         return self._svc
 

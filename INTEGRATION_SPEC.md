@@ -256,6 +256,10 @@ NetworkPolicy). Rule: **every per-user operational endpoint accepts EITHER auth 
 Only enumeration (`/agent/cloud/users`) and the creds bootstrap (`/agent/cloud/config/{user_id}`)
 are cloud-specific endpoints; everything else is the existing per-user endpoint with dual auth.
 
+**Header convention (cloud mode):** the agent sends `X-Internal-Token: <token>` + `X-User-Id: <uuid>`
+on the dual-auth reads/writes. (`/agent/cloud/config/{user_id}` carries the id in the path instead.)
+⚠️ job-radar must read `X-User-Id` for the cloud auth path — confirm this matches the implementation.
+
 ### 2.2 Frontend-facing (JWT)
 | Method/Path | Returns |
 |---|---|

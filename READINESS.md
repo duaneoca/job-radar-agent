@@ -38,24 +38,29 @@ Last updated: 2026-06-12.
 ---
 
 ## Go-live checklist (before inviting others)
-- [ ] **`GmailProvider`** implemented (Gmail API, minimal scope `label add/remove + mark-read`,
-      newest-first + `newer_than:{days}` query, no attachment/remote fetch). [H5/M1]
-- [ ] **`McpWriter`** (MCP streamable-HTTP → `jobradar-mcp-writer:8001/mcp`, `X-Agent-Key` header).
-- [ ] **Multi-user runner** — enumerate via `GET /agent/cloud/users`, fetch each
-      `GET /agent/cloud/config/{user_id}` (internal-token, in-cluster), process one user at a time +
-      discard creds, skip users not `enabled`; cloud writes via internal-token + user_id. SPEC §2.1b.
-      [H6/H6a/L3]
-- [ ] **Image publishing** — ✅ GHCR workflow live (`ghcr.io/duaneoca/job-radar-agent:latest`);
-      confirm package visibility / imagePullSecret for the cluster.
-- [ ] **GmailProvider from blob** — accept creds from the `get_config` `email_credentials` dict
-      (`Credentials.from_authorized_user_info`), not just `token.json`. Blob shape in SPEC §1.5.
-- [ ] **A-6**: Dockerfile + docker-compose (local) + GHCR image; local scheduling (interval loop/cron).
-- [ ] **JR-5** (job-radar): external ingress for mcp-writer; agent CronJob/Deployment manifests.
-- [ ] **JR-4** (job-radar): Inbox page + Ops dashboard + Email Agent settings (keys/onboarding).
-- [ ] **`SLACK_SIGNING_SECRET`** set on job-radar; wire HITL resume (poller + LangGraph interrupt/checkpoint).
-- [ ] **Cost/DoS caps live** — per-run token budget + daily spend ceiling + circuit breaker. [H4]
-- [ ] **Multi-user E2E test** on staging (you + one friend's Gmail) before opening up.
+- [x] **`GmailProvider`** (Gmail API, gmail.modify, labels, newest-first + age, no attachment/remote
+      fetch). Live-verified. [H5/M1]
+- [x] **GmailProvider from blob** — `creds_info` dict via `from_authorized_user_info` (cloud path).
+- [x] **A-6**: Dockerfile + docker-compose + interval scheduler. Image builds.
+- [x] **Image publishing** — GHCR workflow live (`ghcr.io/duaneoca/job-radar-agent:latest`).
+- [x] **Multi-user cloud runner** (`agent/cloud.py` + `scripts/run_cloud.py`) — enumerate
+      `/agent/cloud/users` → fetch each `/agent/cloud/config/{user_id}` → process one user + discard →
+      next; skip disabled; cloud writes via `X-Internal-Token`+`X-User-Id`; circuit breaker + total-
+      email budget. Unit-tested. **Pending: live multi-user E2E** (needs job-radar `/agent/cloud/*`
+      reachable + the shared internal token). SPEC §2.1b. [H6/H6a/L3]
+- [~] **`McpWriter`** — SHELVED. Cloud writes go via REST-internal (decision A); `mcp-writer` not in
+      the path. (Optionally revive if Server 2 should be consumed via MCP.)
+- [ ] **`McpReaderClient`** — consume Server 1 (Email Reader) via stdio so an MCP server is genuinely
+      consumed at runtime (portfolio). Currently runtime reads via the provider directly.
+- [ ] **Cost/DoS caps** — per-run email cap ✅ + cloud-run total-email budget ✅; **daily $ ceiling +
+      token budget still TODO** (needs a spend counter / Langfuse cost read). [H4]
+- [ ] **`SLACK_SIGNING_SECRET`** on job-radar; wire HITL resume (poller + LangGraph interrupt).
+- [ ] **Multi-user E2E test** on staging (you + a friend's Gmail) before opening up.
 - [ ] Confirm per-user data isolation (IDOR/H1) holds with 2+ real users.
+- [x] **JR-4 / JR-5** (job-radar): UI + deploy — reported done by the job-radar thread.
+
+CronJob CMD = `python scripts/run_cloud.py` (NOT `run_loop.py --once`, which is the single-user
+local loop). Set `concurrencyPolicy: Forbid` + `activeDeadlineSeconds`.
 
 ## Reference
 Full plan + phase detail: `/Users/duaneo/Claude/General/email_pipeline/EXECUTION_PLAN.md`.
