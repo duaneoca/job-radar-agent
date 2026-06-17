@@ -7,6 +7,7 @@ writer, LLM clients, and notifier — the full local-path stack — plus a close
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Callable
 
@@ -46,19 +47,25 @@ def build_components() -> Components:
     if not agent_settings.llm_api_key:
         raise SystemExit("✗ LLM_API_KEY not set")
 
-    provider = _build_provider()
-    reader = ProviderReader(
-        provider, root=folders.root,
-        dest_folders={"interaction": folders.interaction, "postings": folders.postings,
-                      "social": folders.social, "unprocessed": folders.unprocessed},
-        since_days=email_settings.max_email_age_days if email_settings.max_email_age_days > 0 else None,
-        limit=email_settings.max_emails_per_run,
-    )
+    # Email Reader transport: 'mcp' genuinely consumes the stdio Email Reader server; 'direct'
+    # (default) uses the provider in-process. Both expose the same EmailReaderClient interface.
+    if os.environ.get("EMAIL_READER_TRANSPORT", "direct").lower() == "mcp":
+        from .reader_mcp import McpReaderClient
+        reader: object = McpReaderClient()
+    else:
+        provider = _build_provider()
+        reader = ProviderReader(
+            provider, root=folders.root,
+            dest_folders={"interaction": folders.interaction, "postings": folders.postings,
+                          "social": folders.social, "unprocessed": folders.unprocessed},
+            since_days=email_settings.max_email_age_days if email_settings.max_email_age_days > 0 else None,
+            limit=email_settings.max_emails_per_run,
+        )
     writer = RestWriter(agent_settings.jobradar_api_url, agent_settings.agent_api_key)
     notifier = make_notifier()
 
     def _close():
-        for obj in (provider, writer, notifier):
+        for obj in (reader, writer, notifier):
             if hasattr(obj, "close"):
                 try:
                     obj.close()

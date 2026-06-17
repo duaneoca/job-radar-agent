@@ -50,8 +50,10 @@ Last updated: 2026-06-12.
       reachable + the shared internal token). SPEC §2.1b. [H6/H6a/L3]
 - [~] **`McpWriter`** — SHELVED. Cloud writes go via REST-internal (decision A); `mcp-writer` not in
       the path. (Optionally revive if Server 2 should be consumed via MCP.)
-- [ ] **`McpReaderClient`** — consume Server 1 (Email Reader) via stdio so an MCP server is genuinely
-      consumed at runtime (portfolio). Currently runtime reads via the provider directly.
+- [x] **`McpReaderClient`** — consumes Server 1 (Email Reader) over stdio (`EMAIL_READER_TRANSPORT=mcp`);
+      live-verified against real Gmail (spawns the server, MCP handshake, `get_unread_emails`). Default
+      transport stays `direct` (in-process) for robustness; MCP is the opt-in "genuinely consumes MCP"
+      path. So the agent both publishes (Server 1) AND consumes MCP at runtime.
 - [x] **Cost/DoS caps** — per-run email cap + cloud-run total-email budget + **daily $ spend ceiling**
       (`agent/budget.py` `DailySpendStore`, per-user, persisted; enforced in `run_once` — skips run if
       over, halts mid-run, persists accrued cost). litellm `completion_cost` per call. [H4]
