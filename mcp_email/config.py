@@ -12,9 +12,11 @@ from dataclasses import dataclass
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from agent.paths import env_file
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=env_file(), extra="ignore")
 
     email_provider: str = "proton"           # proton | gmail
 

@@ -13,10 +13,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .llm import LLMClient
 from .llm_litellm import LiteLLMClient
 from .observability import get_langfuse
+from .paths import env_file
 
 
 class AgentSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=env_file(), extra="ignore")
 
     # Job Radar (writer)
     jobradar_api_url: str = "https://staging.job-radar.net/api"

@@ -13,4 +13,5 @@ token.json
 *.sqlite
 *.sqlite3
 checkpoints.db
-*.md
+# NOTE: do NOT blanket-ignore *.md — README.md (pyproject readme) and agent/seed_prompts/*.md
+# (packaged prompts) are needed in the build context.

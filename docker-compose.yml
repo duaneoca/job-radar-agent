@@ -11,4 +11,4 @@ services:
       - ./data:/app/data                       # checkpoints / lockfile persistence
       - ./credentials.json:/app/credentials.json:ro   # Gmail (ignored if using Proton)
       - ./token.json:/app/token.json                  # Gmail token (writable for refresh)
-    # one-shot instead of the loop:  docker compose run --rm agent python scripts/run_loop.py --once
+    # one-shot instead of the loop:  docker compose run --rm agent job-radar-agent run --once

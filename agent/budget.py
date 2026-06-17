@@ -15,7 +15,11 @@ import threading
 
 
 class DailySpendStore:
-    def __init__(self, path: str = "data/spend.json"):
+    def __init__(self, path: str | None = None):
+        # default lives in the per-user state dir (resolved lazily, not at import)
+        if path is None:
+            from .paths import data_dir
+            path = str(data_dir() / "spend.json")
         self._path = path
         self._lock = threading.Lock()
 

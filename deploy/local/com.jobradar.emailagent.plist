@@ -4,10 +4,22 @@
 <dict>
   <key>Label</key>
   <string>com.jobradar.emailagent</string>
+
+  <!-- the pipx-installed console script; replace the path if pipx installs elsewhere -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/duaneo/git/duaneoca/job-radar-agent/deploy/local/run-agent.sh</string>
+    <string>/Users/duaneo/.local/bin/job-radar-agent</string>
+    <string>run</string>
+    <string>--once</string>
   </array>
+
+  <!-- where .env + data/ live (durable, survives pipx upgrade) -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENT_HOME</key>
+    <string>/Users/duaneo/Library/Application Support/JobRadarAgent</string>
+  </dict>
+
   <key>StartInterval</key>
   <integer>900</integer>            <!-- every 15 min -->
   <key>RunAtLoad</key>

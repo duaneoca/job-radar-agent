@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-radar-agent"
+version = "0.1.0"
+description = "Agentic email pipeline (LangGraph + Langfuse + MCP) that classifies job-related email and writes results into Job Radar."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "duaneoca" }]
+dependencies = [
+    "langgraph>=0.2.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.5.0",
+    "httpx>=0.27.0",
+    "litellm>=1.50.0",
+    "langfuse>=2.50.0",
+    "mcp>=1.2.0",
+    # Gmail provider (cloud / Gmail self-host)
+    "google-auth>=2.35.0",
+    "google-auth-oauthlib>=1.2.1",
+    "google-api-python-client>=2.151.0",
+]
+
+[project.scripts]
+job-radar-agent = "agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/duaneoca/job-radar-agent"
+
+[tool.setuptools]
+packages = ["agent", "agent.seed_prompts", "mcp_email", "mcp_email.providers", "notifications", "hitl"]
+
+[tool.setuptools.package-data]
+"agent.seed_prompts" = ["*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

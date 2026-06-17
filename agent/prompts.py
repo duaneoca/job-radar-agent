@@ -11,10 +11,8 @@ attempts in the body can't masquerade as instructions. [C1]
 
 from __future__ import annotations
 
-from pathlib import Path
+from importlib.resources import files
 from typing import Protocol
-
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 
 class PromptProvider(Protocol):
@@ -23,13 +21,15 @@ class PromptProvider(Protocol):
 
 
 class SeedPromptProvider:
-    def __init__(self, directory: Path = _PROMPTS_DIR):
-        self._dir = directory
+    """Loads the seed prompts shipped inside the package (`agent/seed_prompts/*.md`) via
+    importlib.resources — so they're found whether running from the repo or a pip/pipx install."""
+
+    def __init__(self):
         self._cache: dict[str, str] = {}
 
     def get(self, name: str) -> str:
         if name not in self._cache:
-            self._cache[name] = (self._dir / f"{name}.md").read_text(encoding="utf-8")
+            self._cache[name] = (files("agent.seed_prompts") / f"{name}.md").read_text(encoding="utf-8")
         return self._cache[name]
 
 
