@@ -59,6 +59,14 @@ class _UserComponents:
     close: Callable[[], None]
 
 
+def _full_label(root: str, leaf: str, sep: str = "/") -> str:
+    """Join a bare sub-label under root (Gmail/IMAP names are the full path). Idempotent if already
+    full — so it's safe whether the config sends leaves ("Postings") or full paths."""
+    if not leaf or leaf == root or leaf.startswith(root + sep):
+        return leaf or root
+    return f"{root}{sep}{leaf}"
+
+
 def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_token: str,
                           since_days: int | None, limit: int | None) -> _UserComponents:
     f = cfg["folders"]
@@ -71,10 +79,12 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
         # No cloud-IMAP provider yet (cloud = Gmail-only). Fail loudly per user, isolated.
         raise NotImplementedError(f"cloud provider '{provider_kind}' not supported yet")
 
+    root = f["root"]
     reader = ProviderReader(
-        provider, root=f["root"],
-        dest_folders={"interaction": f["interaction"], "postings": f["postings"],
-                      "social": f["social"], "unprocessed": f["unprocessed"]},
+        provider, root=root,
+        # sub-labels are full paths under root (Gmail) — join, mirroring the local Folders logic
+        dest_folders={k: _full_label(root, f[k])
+                      for k in ("interaction", "postings", "social", "unprocessed")},
         since_days=since_days, limit=limit,
     )
     writer = RestWriter(base_url, internal_token=internal_token, user_id=user_id)

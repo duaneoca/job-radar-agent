@@ -121,6 +121,29 @@ def test_build_user_components_uses_per_user_llm_for_classifier_AND_critic():
         comp.close()
 
 
+def test_full_label_joins_bare_leaf_and_is_idempotent():
+    from agent.cloud import _full_label
+    assert _full_label("Hire Duane", "Postings") == "Hire Duane/Postings"      # bare leaf → joined
+    assert _full_label("Hire Duane", "Hire Duane/Postings") == "Hire Duane/Postings"  # already full
+    assert _full_label("Hire Duane", "") == "Hire Duane"
+
+
+def test_build_user_components_joins_sublabels_under_root():
+    from agent.cloud import build_user_components
+    cfg = {"folders": {"root": "Hire Duane", "interaction": "Interaction", "postings": "Postings",
+                       "social": "Social", "unprocessed": "Unprocessed"},  # BARE leaves
+           "email_credentials": {"provider": "gmail", "refresh_token": "rt"},
+           "llm": {"provider": "google", "preferred_model": "gemini/x", "api_key": "k"}}
+    comp = build_user_components(cfg, "u1", base_url="https://x/api", internal_token="t",
+                                 since_days=14, limit=100)
+    try:
+        d = comp.reader._dest
+        assert d["postings"] == "Hire Duane/Postings"      # joined, not bare "Postings"
+        assert d["interaction"] == "Hire Duane/Interaction"
+    finally:
+        comp.close()
+
+
 def test_total_email_budget_stops_run(monkeypatch):
     users = [{"user_id": f"u{i}", "enabled": True} for i in range(5)]
     cc = _FakeConfigClient(users, {f"u{i}": _cfg() for i in range(5)})

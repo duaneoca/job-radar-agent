@@ -118,7 +118,7 @@ A key maps to **exactly one user**. The user is **derived** from the key on ever
 | provider | enum | `gmail \| imap` |
 | encrypted_blob | text | Fernet via **`ENCRYPTION_KEY`** (the JR-0 split key), NOT `SECRET_KEY` |
 | folder_root | text | e.g. `hire-duane` |
-| folder_interaction / _postings / _social / _unprocessed | text | configurable names `[D6]` |
+| folder_interaction / _postings / _social / _unprocessed | text | **bare leaf names** (e.g. `Postings`); the agent joins them under `folder_root` with `/` (→ `Hire Duane/Postings`, the Gmail/IMAP full label path). Sending full paths also works (join is idempotent). `[D6]` |
 | created_at / updated_at | timestamptz | |
 
 Gmail stores an OAuth **refresh token** here — high value. SHOULD use a separate key tier / KMS
