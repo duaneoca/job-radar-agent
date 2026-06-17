@@ -50,10 +50,11 @@ _GEN_NAME = {"Classification": "classify", "Critique": "critic"}
 
 class LiteLLMClient:
     def __init__(self, provider: str, model: str, api_key: str, temperature: float = 0.0,
-                 langfuse=None):
+                 langfuse=None, timeout: float = 60.0):
         self._model = _model_string(provider, model)
         self._api_key = api_key
         self._temperature = temperature
+        self._timeout = timeout                  # per-call timeout — a stalled LLM must not hang the run
         self._lf = langfuse                      # optional Langfuse client; None = no tracing
         self.run_cost = 0.0                      # $ accrued since last reset_cost() — H4 budget
 
@@ -81,6 +82,7 @@ class LiteLLMClient:
             resp = litellm.completion(
                 model=self._model, api_key=self._api_key, temperature=self._temperature,
                 messages=messages, response_format={"type": "json_object"},
+                timeout=self._timeout,
             )
             content = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)

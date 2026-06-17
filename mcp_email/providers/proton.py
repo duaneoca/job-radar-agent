@@ -82,16 +82,17 @@ def _strip_html(html: str) -> str:
 
 
 class ProtonProvider(EmailProvider):
-    def __init__(self, host: str, port: int, user: str, password: str):
+    def __init__(self, host: str, port: int, user: str, password: str, timeout: float = 30.0):
         self._host, self._port = host, port
         self._user, self._password = user, password
+        self._timeout = timeout            # socket timeout — without it a stalled Bridge hangs forever
         self._conn: imaplib.IMAP4 | None = None
 
     # ── connection ────────────────────────────────────────────
     def _imap(self) -> imaplib.IMAP4:
         if self._conn is None:
             # Bridge typically offers STARTTLS on 1143; fall back to plain on the local loopback.
-            conn = imaplib.IMAP4(self._host, self._port)
+            conn = imaplib.IMAP4(self._host, self._port, timeout=self._timeout)
             try:
                 conn.starttls()
             except (imaplib.IMAP4.error, OSError):

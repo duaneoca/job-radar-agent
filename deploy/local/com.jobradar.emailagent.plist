@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jobradar.emailagent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/duaneo/git/duaneoca/job-radar-agent/deploy/local/run-agent.sh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>            <!-- every 15 min -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/duaneo/Library/Logs/jobradar-emailagent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/duaneo/Library/Logs/jobradar-emailagent.log</string>
+</dict>
+</plist>

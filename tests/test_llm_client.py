@@ -71,6 +71,7 @@ def test_structured_parses_valid_json(monkeypatch):
     assert calls["model"] == "anthropic/claude-sonnet-4-6"
     assert calls["api_key"] == "sk-test"
     assert "JSON Schema" in calls["messages"][0]["content"]
+    assert calls["timeout"] == 60.0   # per-call timeout passed (no infinite hang)
 
 
 def test_structured_raises_on_unparseable(monkeypatch):
