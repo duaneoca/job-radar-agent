@@ -15,3 +15,8 @@ token.json
 tests/fixtures/real/
 **/fixtures/real/
 *.local
+
+# build artifacts
+*.egg-info/
+build/
+dist/

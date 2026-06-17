@@ -1,4 +1,0 @@
-agent
-hitl
-mcp_email
-notifications
