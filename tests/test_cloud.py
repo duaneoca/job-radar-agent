@@ -102,6 +102,25 @@ def test_circuit_breaker_stops_on_consecutive_failures(monkeypatch):
     assert len(cc.fetched) == 3                   # CIRCUIT_BREAK
 
 
+def test_build_user_components_uses_per_user_llm_for_classifier_AND_critic():
+    # Regression: a Gemini user must NOT get an Anthropic-default critic (the cloud bug).
+    from agent.cloud import build_user_components
+    cfg = {"folders": {"root": "Hire Duane", "interaction": "Hire Duane/Interaction",
+                       "postings": "Hire Duane/Postings", "social": "Hire Duane/Social",
+                       "unprocessed": "Hire Duane/Unprocessed"},
+           "email_credentials": {"provider": "gmail", "refresh_token": "rt",
+                                 "client_id": "c", "client_secret": "s"},
+           "llm": {"provider": "google", "preferred_model": "gemini/gemini-1.5-flash", "api_key": "k"}}
+    comp = build_user_components(cfg, "u1", base_url="https://x/api", internal_token="t",
+                                 since_days=14, limit=100)
+    try:
+        assert comp.llm._model == "gemini/gemini-1.5-flash"
+        assert comp.critic_llm._model == "gemini/gemini-1.5-flash"   # NOT anthropic/claude-*
+        assert comp.llm._api_key == "k" and comp.critic_llm._api_key == "k"
+    finally:
+        comp.close()
+
+
 def test_total_email_budget_stops_run(monkeypatch):
     users = [{"user_id": f"u{i}", "enabled": True} for i in range(5)]
     cc = _FakeConfigClient(users, {f"u{i}": _cfg() for i in range(5)})

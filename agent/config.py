@@ -85,10 +85,15 @@ def make_notifier(settings: AgentSettings = settings):
 
 
 def llm_from_config_bundle(bundle: dict) -> LLMClient | None:
-    """Build a Classifier client from a GET /agent/config bundle (cloud path). None if no LLM key."""
+    """
+    Build an LLM client from a GET /agent/config bundle (cloud path). None if no LLM key.
+    Used for BOTH the classifier and the critic — the per-user provider/model/key drives both
+    (D2/Q5), so the cloud critic must come from here, NOT make_critic_llm() (which reads LOCAL env).
+    Langfuse-traced when configured.
+    """
     llm = bundle.get("llm")
     if not llm or not llm.get("api_key"):
         return None
     return LiteLLMClient(llm.get("provider", "anthropic"),
                          llm.get("preferred_model") or llm.get("model", ""),
-                         llm["api_key"])
+                         llm["api_key"], langfuse=get_langfuse())

@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 import httpx
 
-from .config import llm_from_config_bundle, make_critic_llm
+from .config import llm_from_config_bundle
 from .reader import ProviderReader
 from .runner import run_once
 from .writer_rest import RestWriter
@@ -78,8 +78,11 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
         since_days=since_days, limit=limit,
     )
     writer = RestWriter(base_url, internal_token=internal_token, user_id=user_id)
+    # BOTH classifier and critic use the per-user config (NOT make_critic_llm(), which reads local
+    # env defaults — that caused "Missing Anthropic API Key" for a Gemini user in the cloud).
     llm = llm_from_config_bundle(cfg)
-    if llm is None:
+    critic_llm = llm_from_config_bundle(cfg)
+    if llm is None or critic_llm is None:
         raise ValueError("no LLM key in config for user")
 
     def _close():
@@ -91,7 +94,7 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
                     pass
 
     return _UserComponents(reader=reader, writer=writer, llm=llm,
-                           critic_llm=make_critic_llm(), close=_close)
+                           critic_llm=critic_llm, close=_close)
 
 
 def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token: str,
