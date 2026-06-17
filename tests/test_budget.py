@@ -83,3 +83,13 @@ def test_no_enforcement_without_store(tmp_path):
     res = run_once(reader=reader, writer=FakeWriter(), prompts=PROMPTS, use_lock=False,
                    llm=FakeLLM([_alert()]), critic_llm=FakeLLM([Critique(valid=True)]))
     assert res.emails_processed == 1
+
+
+def test_ceiling_zero_means_disabled_not_block_all(tmp_path):
+    # a misconfigured ceiling of 0 must NOT silently skip every run (footgun guard)
+    store = DailySpendStore(str(tmp_path / "spend.json"))
+    reader = FakeReader([_email("<1>")])
+    res = run_once(reader=reader, writer=FakeWriter(), prompts=PROMPTS, use_lock=False,
+                   llm=FakeLLM([_alert()]), critic_llm=FakeLLM([Critique(valid=True)]),
+                   spend_key="local", daily_ceiling=0, spend_store=store)
+    assert res.emails_processed == 1                  # processed, not skipped

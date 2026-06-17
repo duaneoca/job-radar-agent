@@ -123,6 +123,11 @@ def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token
                 comp.close()                       # discard this user's creds before the next
             summary["processed"] += res.emails_processed
             summary["escalations"] += res.escalations
+            # surface per-user run outcome so processed=0 isn't a silent mystery
+            if res.status != "success" or res.errors:
+                summary["errors"].append(
+                    f"{uid}: status={res.status} processed={res.emails_processed}"
+                    + (" :: " + "; ".join(res.errors[:5]) if res.errors else ""))
             consecutive_errors = 0
         except Exception as exc:
             consecutive_errors += 1

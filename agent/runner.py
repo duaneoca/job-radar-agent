@@ -125,7 +125,9 @@ def run_once(
         app = build_graph(nodes)
 
         # H4 daily spend ceiling — refuse the run if already over, then enforce per-email.
-        enforce_budget = daily_ceiling is not None and spend_store is not None
+        # ceiling <= 0 means DISABLED (not "block everything") — avoids a misconfig silently
+        # skipping all processing.
+        enforce_budget = bool(daily_ceiling and daily_ceiling > 0 and spend_store is not None)
         already = spend_store.spent_today(spend_key) if enforce_budget else 0.0
         if enforce_budget and already >= daily_ceiling:
             result.status = "partial"
