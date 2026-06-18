@@ -4,6 +4,7 @@
     job-radar-agent run   [--once] [--dry-run]   # local: interval loop (default) / single pass
     job-radar-agent cloud [--dry-run]            # multi-user cloud run (the k8s CronJob CMD)
     job-radar-agent doctor                        # preflight checklist
+    job-radar-agent models                        # list model ids your provider+key can use
     job-radar-agent version
 
 launchd runs `job-radar-agent run --once` every 15 min. Config/state resolve via agent.paths
@@ -16,7 +17,7 @@ import sys
 
 __version__ = "0.1.0"
 
-_USAGE = "usage: job-radar-agent {run|cloud|doctor|version} [--once] [--dry-run]"
+_USAGE = "usage: job-radar-agent {run|cloud|doctor|models|version} [--once] [--dry-run]"
 
 
 def _run(argv: list[str]) -> int:
@@ -71,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "doctor":
         from .doctor import run as doctor_run
         return doctor_run()
+    if cmd == "models":
+        from .models import run as models_run
+        return models_run()
     if cmd in ("version", "--version", "-v"):
         print(f"job-radar-agent {__version__}")
         return 0
