@@ -66,8 +66,20 @@ def run() -> int:
         except Exception as exc:
             check("Job Radar reachable + key valid", False, f"{type(exc).__name__}: {exc}")
 
-    check("Langfuse configured", bool(A.langfuse_public_key and A.langfuse_secret_key),
-          f"→ {A.langfuse_host}" if A.langfuse_public_key else "", critical=False)
+    if not (A.langfuse_public_key and A.langfuse_secret_key):
+        check("Langfuse configured", False, "keys not set (tracing off)", critical=False)
+    else:
+        # Actually authenticate against the server — catches wrong keys AND wrong region/host,
+        # which a "keys present" check silently misses.
+        try:
+            from .observability import get_langfuse
+            lf = get_langfuse()
+            ok_lf = bool(lf and lf.auth_check())
+            check("Langfuse reachable + keys valid", ok_lf,
+                  A.langfuse_host, critical=False)
+        except Exception as exc:
+            check("Langfuse reachable + keys valid", False,
+                  f"{A.langfuse_host}: {type(exc).__name__}: {exc}", critical=False)
     check(f"notifier ({A.notifier})", A.notifier != "null", critical=False)
     check(f"daily spend ceiling ${A.daily_spend_ceiling_usd}", A.daily_spend_ceiling_usd > 0,
           "0 = disabled", critical=False)
