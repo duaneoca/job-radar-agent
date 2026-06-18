@@ -111,6 +111,27 @@ repo's `scripts/mint_agent_key.py` logs in and mints one via the API.)
 > reads `<AGENT_HOME>/.env`. A local `./.env` takes precedence when you run from a repo checkout, so
 > development is unaffected.
 
+### 3.2 Picking the LLM model name
+
+Model ids are a common stumbling point — they're **lowercase, dash-separated, no provider prefix, and
+the version separator is a dash not a dot**: `claude-sonnet-4-6` ✓, not `Claude Sonnet 4.6`,
+`claude-sonnet-4.6`, or `anthropic/claude-sonnet-4-6`. The agent adds the provider prefix itself.
+
+Don't guess — ask your provider what your key actually accepts:
+
+```bash
+AGENT_HOME="$HOME/Library/Application Support/JobRadarAgent" job-radar-agent models
+```
+
+It lists the exact ids (Anthropic / OpenAI / Google / Groq) and marks your current one. Copy a bare id
+straight into `LLM_MODEL`.
+
+> **Why this matters:** a wrong model id isn't a loud crash — litellm raises a per-call error that the
+> agent treats as "couldn't process this email." Before the resilience fix that meant good emails were
+> *misfiled to Unprocessed*; now they're left to retry, but the run still does no useful work until the
+> id is right. `models` (discover) + `doctor`'s live LLM ping (verify, below) make a bad id impossible
+> to carry into a real run.
+
 ---
 
 ## 4. Preflight
@@ -119,8 +140,10 @@ repo's `scripts/mint_agent_key.py` logs in and mints one via the API.)
 AGENT_HOME="$HOME/Library/Application Support/JobRadarAgent" job-radar-agent doctor
 ```
 
-It checks: Bridge login, the folders exist, LLM key set, Job Radar reachable + key valid, and the
-optional integrations. **Fix any ✗ before scheduling.**
+It checks: Bridge login, the folders exist, **LLM reachable** (a live 1-token call — catches a wrong
+model id or bad key, not just "key present"), Job Radar reachable + key valid, and **Langfuse reachable**
+(a live `auth_check`, with the resolved host shown so you can confirm the region). **Fix any ✗ before
+scheduling.**
 
 ---
 
@@ -157,6 +180,9 @@ tail -f ~/Library/Logs/jobradar-emailagent.log
 
 # run one pass right now (force)
 launchctl kickstart -k gui/$(id -u)/com.jobradar.emailagent
+
+# list valid model ids for your provider+key (then set LLM_MODEL)
+job-radar-agent models
 
 # status
 launchctl print gui/$(id -u)/com.jobradar.emailagent
@@ -200,6 +226,9 @@ pipx uninstall job-radar-agent
 - **doctor: "email provider login" ✗** — Bridge isn't running, wrong port, or wrong Bridge password.
   Confirm Bridge is up and the IMAP password matches Bridge → Settings.
 - **doctor: folder ✗** — create the missing folder/label in Proton (the agent never creates folders).
+- **"LLM reachable" ✗ (NotFoundError / "model … was not found")** — wrong `LLM_MODEL`. Run
+  `job-radar-agent models` for the exact ids; remember dashes-not-dots and no provider prefix
+  (`claude-sonnet-4-6`, not `claude-sonnet-4.6` or `anthropic/…`). See §3.2.
 - **"Job Radar reachable" ✗** — check `JOBRADAR_API_URL` and that the agent key is valid/not revoked.
 - **A run takes a long time** — it's processing the unread backlog (up to `MAX_EMAILS_PER_RUN`). Lower
   the cap; it drains over several runs. (A genuine network stall is bounded by built-in 30s IMAP /
