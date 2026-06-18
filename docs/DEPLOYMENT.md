@@ -77,8 +77,8 @@ LLM_PROVIDER=anthropic
 LLM_MODEL=claude-haiku-4-5
 LLM_API_KEY=<your provider key>
 
-JOBRADAR_API_URL=https://staging.job-radar.net/api    # → https://job-radar.net/api when you go live
-AGENT_API_KEY=<minted in Job Radar settings>
+JOBRADAR_API_URL=https://job-radar.net/api
+AGENT_API_KEY=<from Job Radar → Settings → Email Agent — see §3.1>
 
 MAX_EMAILS_PER_RUN=25            # keeps each run ~2-3 min; drains a backlog over several runs
 MAX_EMAIL_AGE_DAYS=14
@@ -91,7 +91,21 @@ LANGFUSE_SECRET_KEY=...
 NOTIFIER=slack
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_USER_CHANNEL=#your-channel     # invite the bot to it
+# SLACK_ADMIN_CHANNEL is optional — blank = ops/error alerts go to your user channel too.
 ```
+
+### 3.1 Getting the agent API key
+
+The agent authenticates to Job Radar with a per-user **agent key** (sent as `X-Agent-Key`). Job Radar
+stores only a hash of it and shows the raw value **once**, so copy it immediately.
+
+1. Sign in to Job Radar (the host in `JOBRADAR_API_URL`).
+2. **Settings → Email Agent → Agent Keys → Generate key.**
+3. Copy the key (starts with `jr_…`) into `AGENT_API_KEY` in your `.env`.
+
+The key maps to *your* user — Job Radar derives the user from it, so the agent never sends a user id.
+If a key leaks, revoke it on that same page and generate a new one. (CI/headless alternative: the
+repo's `scripts/mint_agent_key.py` logs in and mints one via the API.)
 
 > **How config is found:** the agent resolves `AGENT_HOME` (defaults to the path above on macOS), and
 > reads `<AGENT_HOME>/.env`. A local `./.env` takes precedence when you run from a repo checkout, so
@@ -199,18 +213,19 @@ pipx uninstall job-radar-agent
 
 ---
 
-## 10. Going to production
+## 10. Testing against staging first (optional)
 
-When you're comfortable after a few supervised cycles on **staging**, flip `JOBRADAR_API_URL` to
-`https://job-radar.net/api` in `<AGENT_HOME>/.env` and `launchctl kickstart` once to confirm. No code
-change needed.
+The default `JOBRADAR_API_URL` is production (`https://job-radar.net/api`). If you'd rather shake
+things out without writing to your real inbox, point it at `https://staging.job-radar.net/api` (using
+an agent key minted on the staging instance), run a few supervised cycles, then flip back to
+production and `launchctl kickstart` once to confirm. No code change either way.
 
 ---
 
 ## Notes for a future self-hoster
-- **Gmail** instead of Proton: set `EMAIL_PROVIDER=gmail` and run the one-time OAuth (`scripts/gmail_auth.py`);
-  no Bridge needed. (Most non-Proton users go through Job Radar's cloud path instead.)
-- **Linux**: same pipx model; replace launchd with a **systemd user timer** (or cron) running
-  `job-radar-agent run --once`. Config dir is `~/.config/job-radar-agent/` (XDG). Proton on headless
-  Linux additionally needs a headless Bridge (keyring) — see the design notes.
+- **Gmail is the cloud path, not a local one** — Gmail users connect their account in Job Radar and
+  are processed by the in-cluster agent. This local runbook is specifically for **Proton (Bridge)**.
+- **Linux** (Proton on a headless box): same pipx model, but replace launchd with a **systemd user
+  timer** (or cron) running `job-radar-agent run --once`; config dir is `~/.config/job-radar-agent/`
+  (XDG). Headless Proton Bridge also needs a keyring (`pass`) — see the design notes.
 - Security posture: `SECURITY.md`. Threat model + go-live checklist: `READINESS.md`.
