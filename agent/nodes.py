@@ -68,7 +68,11 @@ class Nodes:
             classification = self.llm.structured(
                 system=self.prompts.get("classifier"), user=user, schema=Classification
             )
-        except Exception as exc:  # malformed / unparseable output is a validation failure, not a crash
+        except ValueError as exc:
+            # Malformed/unparseable model output (incl. LLMParseError, pydantic ValidationError) is a
+            # recoverable validation failure → in-loop retry. Infrastructure errors (RateLimitError,
+            # Timeout, API/5xx) are NOT ValueErrors: they propagate so the runner leaves the email in
+            # place to retry next run, instead of misfiling a perfectly good email to Unprocessed.
             return {
                 "attempts": attempts,
                 "classification": None,

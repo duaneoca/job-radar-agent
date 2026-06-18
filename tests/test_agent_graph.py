@@ -80,6 +80,19 @@ def test_classify_handles_malformed_output():
     assert out["feedback"] and "not valid structured data" in out["feedback"][0]
 
 
+def test_classify_propagates_infra_errors():
+    # A rate-limit/timeout/API error is NOT a ValueError — it must propagate (so the runner leaves the
+    # email in place to retry) rather than being swallowed into a misfile-to-Unprocessed escalation.
+    class RateLimitError(Exception):
+        pass
+
+    def rate_limited(*_):
+        raise RateLimitError("429 quota exceeded")
+    nodes, *_ = make_nodes([rate_limited], [])
+    with pytest.raises(RateLimitError):
+        nodes.classify({"email": email(), "attempts": 0})
+
+
 def test_write_postings_dedup_and_truncation():
     postings = [Posting(company=f"Co{i}", role="Eng", link="https://x") for i in range(35)]
     postings[0] = Posting(company="Acme", role="FDE", link="https://acme")

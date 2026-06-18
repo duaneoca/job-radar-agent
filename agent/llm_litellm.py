@@ -15,7 +15,9 @@ import json
 import re
 from typing import TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+
+from .llm import LLMParseError
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -50,11 +52,13 @@ _GEN_NAME = {"Classification": "classify", "Critique": "critic"}
 
 class LiteLLMClient:
     def __init__(self, provider: str, model: str, api_key: str, temperature: float = 0.0,
-                 langfuse=None, timeout: float = 60.0):
+                 langfuse=None, timeout: float = 60.0, num_retries: int = 2):
         self._model = _model_string(provider, model)
         self._api_key = api_key
         self._temperature = temperature
         self._timeout = timeout                  # per-call timeout — a stalled LLM must not hang the run
+        self._num_retries = num_retries          # litellm retries transient 429/timeout/5xx w/ backoff,
+                                                 # honoring Retry-After — rides out brief rate-limit blips
         self._lf = langfuse                      # optional Langfuse client; None = no tracing
         self.run_cost = 0.0                      # $ accrued since last reset_cost() — H4 budget
 
@@ -79,10 +83,12 @@ class LiteLLMClient:
         ]
         name = _GEN_NAME.get(schema.__name__, schema.__name__.lower())
         with generation(self._lf, name=name, model=self._model, messages=messages) as gen:
+            # litellm transient errors (RateLimitError/Timeout/5xx) raise here and PROPAGATE — the
+            # runner leaves the email unmoved for the next run rather than misfiling it.
             resp = litellm.completion(
                 model=self._model, api_key=self._api_key, temperature=self._temperature,
                 messages=messages, response_format={"type": "json_object"},
-                timeout=self._timeout,
+                timeout=self._timeout, num_retries=self._num_retries,
             )
             content = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)
@@ -95,4 +101,9 @@ class LiteLLMClient:
                 usage={"input": getattr(usage, "prompt_tokens", None),
                        "output": getattr(usage, "completion_tokens", None)} if usage else None,
             )
-            return schema.model_validate_json(_extract_json(content))
+            # Bad JSON / schema mismatch is a RETRYABLE classification failure (handled in-loop),
+            # distinct from infra errors above — surface it as LLMParseError (a ValueError).
+            try:
+                return schema.model_validate_json(_extract_json(content))
+            except ValidationError as exc:
+                raise LLMParseError(f"output failed {schema.__name__} schema validation: {exc}") from exc
