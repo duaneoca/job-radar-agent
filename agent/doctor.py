@@ -50,7 +50,23 @@ def run() -> int:
         if provider and hasattr(provider, "close"):
             provider.close()
 
-    check(f"LLM key set ({A.llm_provider}/{A.llm_model})", bool(A.llm_api_key))
+    if not A.llm_api_key:
+        check(f"LLM key set ({A.llm_provider}/{A.llm_model})", False)
+    else:
+        # Live 1-token completion — verifies the key AND the model string actually resolve.
+        # A "key present" check passes even when the model id is wrong (e.g. a UI display name),
+        # which then fails every call mid-run.
+        try:
+            import litellm
+            from .llm_litellm import _model_string
+            litellm.completion(
+                model=_model_string(A.llm_provider, A.llm_model), api_key=A.llm_api_key,
+                messages=[{"role": "user", "content": "ping"}], max_tokens=5, timeout=30,
+            )
+            check(f"LLM reachable ({A.llm_provider}/{A.llm_model})", True)
+        except Exception as exc:
+            check(f"LLM reachable ({A.llm_provider}/{A.llm_model})", False,
+                  f"{type(exc).__name__}: {str(exc)[:160]}")
 
     if not A.agent_api_key:
         check("agent API key set", False)
