@@ -12,12 +12,35 @@ import pytest
 
 from mcp_email.config import Folders, Settings
 from mcp_email.providers.base import EmailMessage, EmailProvider
-from mcp_email.providers.proton import _best_text, _strip_html
+from mcp_email.providers.proton import _best_text, _choose_text, _strip_html
 
 
 def test_strip_html_removes_tags_scripts_styles():
     html = "<style>p{color:red}</style><p>Hello <b>world</b></p><script>evil()</script>"
     assert _strip_html(html) == "Hello world"
+
+
+def test_strip_html_preserves_link_urls():
+    # Job-alert links live in <a href>; they must survive the strip so the classifier can extract them.
+    html = '<p>FDE at Origin <a href="https://linkedin.com/jobs/view/123?ref=x">View job</a></p>'
+    out = _strip_html(html)
+    assert "https://linkedin.com/jobs/view/123?ref=x" in out
+    assert "View job (https://linkedin.com/jobs/view/123?ref=x)" in out
+
+
+def test_strip_html_drops_non_http_hrefs():
+    # Only http/https survive (matches the writer's clean_link allowlist [C2]).
+    assert "javascript" not in _strip_html('<a href="javascript:void(0)">x</a>')
+    assert "data:" not in _strip_html('<a href="data:text/html,evil">x</a>')
+
+
+def test_choose_text_uses_html_when_plain_lacks_links():
+    # LinkedIn-style: plain part has no URLs, links only in HTML → fall back to link-preserving HTML.
+    plain = "FDE at Origin\nView job"
+    html = '<a href="https://x.com/job/1">View job</a>'
+    assert _choose_text(plain, html) == "View job (https://x.com/job/1)"
+    # but a plain body that already has a URL is preferred (cleaner)
+    assert _choose_text("apply: https://y.com/1", html) == "apply: https://y.com/1"
 
 
 def test_best_text_prefers_plain_and_skips_attachments():

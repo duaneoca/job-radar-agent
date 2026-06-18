@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 from .base import EmailMessage, EmailProvider
-from .proton import _strip_html  # shared HTML→text helper
+from .proton import _choose_text  # shared body-selection (prefers the part carrying links)
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
@@ -155,8 +155,4 @@ class GmailProvider(EmailProvider):
                 walk(sub)
 
         walk(payload)
-        if plain is not None:
-            return plain, has_att
-        if html is not None:
-            return _strip_html(html), has_att
-        return "", has_att
+        return _choose_text(plain, html), has_att

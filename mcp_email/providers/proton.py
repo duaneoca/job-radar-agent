@@ -57,11 +57,22 @@ def _best_text(msg: email.message.Message) -> tuple[str, bool]:
         elif ctype == "text/html" and html is None:
             html = _payload(part)
 
-    if plain is not None:
-        return plain, has_attachments
+    return _choose_text(plain, html), has_attachments
+
+
+def _choose_text(plain: str | None, html: str | None) -> str:
+    """Pick the body text that actually carries links.
+
+    text/plain is cleaner, but many job-alert emails (e.g. LinkedIn) put the per-posting URLs ONLY in
+    the HTML part — their plain-text alternative has none. So prefer plain ONLY when it already
+    contains a URL; otherwise fall back to the link-preserving HTML strip so the classifier can see
+    each posting's link. [enables link extraction]
+    """
+    if plain and re.search(r"https?://", plain):
+        return plain
     if html is not None:
-        return _strip_html(html), has_attachments
-    return "", has_attachments
+        return _strip_html(html)
+    return plain or ""
 
 
 def _payload(part: email.message.Message) -> str:
@@ -73,9 +84,15 @@ def _payload(part: email.message.Message) -> str:
         return ""
 
 
+# <a href="https://…">label</a> → "label (https://…)" so URLs survive the tag strip. http/https only
+# (matches the writer's clean_link allowlist [C2]); javascript:/data:/relative hrefs are dropped.
+_ANCHOR = re.compile(r'(?is)<a\b[^>]*?\bhref\s*=\s*["\']?(https?://[^"\'\s>]+)["\']?[^>]*>(.*?)</a>')
+
+
 def _strip_html(html: str) -> str:
     """Crude tag strip. We do NOT render HTML and do NOT fetch remote content. [M1/C2]"""
     text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+    text = _ANCHOR.sub(lambda m: f"{m.group(2)} ({m.group(1)})", text)  # keep link URLs inline
     text = re.sub(r"(?s)<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
