@@ -5,8 +5,6 @@ Exposed as `job-radar-agent doctor`. Returns 0 if all CRITICAL checks pass, else
 
 from __future__ import annotations
 
-import os
-
 from .config import settings as A
 from mcp_email.config import folders
 from mcp_email.config import settings as E
@@ -68,7 +66,8 @@ def run() -> int:
         except Exception as exc:
             check("Job Radar reachable + key valid", False, f"{type(exc).__name__}: {exc}")
 
-    check("Langfuse configured", bool(os.environ.get("LANGFUSE_PUBLIC_KEY")), critical=False)
+    check("Langfuse configured", bool(A.langfuse_public_key and A.langfuse_secret_key),
+          f"→ {A.langfuse_host}" if A.langfuse_public_key else "", critical=False)
     check(f"notifier ({A.notifier})", A.notifier != "null", critical=False)
     check(f"daily spend ceiling ${A.daily_spend_ceiling_usd}", A.daily_spend_ceiling_usd > 0,
           "0 = disabled", critical=False)

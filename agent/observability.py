@@ -12,7 +12,6 @@ Langfuse. Email body DOES appear in trace input (H2): document this / redact ups
 
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
 from typing import Any
 
@@ -27,10 +26,18 @@ def get_langfuse():
     if _RESOLVED:
         return _CLIENT
     _RESOLVED = True
-    if os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"):
+    # Read creds from the agent settings (the .env), NOT os.environ — the deployed binary loads
+    # config via pydantic-settings and never exports it to the process env, so an os.environ read
+    # silently sees nothing. Lazy import avoids the config<->observability import cycle.
+    from .config import settings
+    if settings.langfuse_public_key and settings.langfuse_secret_key:
         try:
             from langfuse import Langfuse
-            _CLIENT = Langfuse()
+            _CLIENT = Langfuse(
+                public_key=settings.langfuse_public_key,
+                secret_key=settings.langfuse_secret_key,
+                host=settings.langfuse_host,   # explicit — SDK defaults to EU when unset
+            )
         except Exception:
             _CLIENT = None
     return _CLIENT
