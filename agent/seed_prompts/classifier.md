@@ -25,7 +25,9 @@ pick the closest but set confidence below 0.5 so it routes to human review rathe
 
 Extraction rules:
 - recruiter_outreach / job_alert: populate `postings` with {company, role, link, action_required}.
-  A job_alert may contain MANY postings — extract each distinct one.
+  A job_alert may contain MANY postings — extract each distinct one. Keep each posting's company,
+  role, and link TOGETHER as they appear grouped in the email (postings are usually one block/line
+  each); never pair a role or link from one posting with a different posting's company.
   `link`: the posting's URL. **Must be a full absolute URL starting with `https://` or `http://`**
   (include the scheme and host). Prefer the **specific per-posting** apply/view URL. If a posting has
   no usable absolute URL, use the email's general "view all jobs" / "see more" absolute link as a

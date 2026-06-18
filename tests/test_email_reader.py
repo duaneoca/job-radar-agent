@@ -34,6 +34,18 @@ def test_strip_html_drops_non_http_hrefs():
     assert "data:" not in _strip_html('<a href="data:text/html,evil">x</a>')
 
 
+def test_strip_html_strips_invisible_junk_and_keeps_structure():
+    # LinkedIn floods alerts with U+034F; postings must end up one-per-line, not a run-on blob.
+    html = ('<li>FDE at Origin͏͏ <a href="https://x.com/1">View</a></li>'
+            '<li>SWE at Acme <a href="https://x.com/2">View</a></li>')
+    out = _strip_html(html)
+    assert "͏" not in out                       # invisible junk gone
+    lines = [l for l in out.split("\n") if l.strip()]
+    assert len(lines) == 2                            # one posting per line
+    assert "Origin View (https://x.com/1)" in lines[0]
+    assert "Acme View (https://x.com/2)" in lines[1]
+
+
 def test_choose_text_uses_html_when_plain_lacks_links():
     # LinkedIn-style: plain part has no URLs, links only in HTML → fall back to link-preserving HTML.
     plain = "FDE at Origin\nView job"
