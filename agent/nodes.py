@@ -17,12 +17,14 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import re
+
 from . import matching
 from .links import clean_link
 from .llm import LLMClient
 from .prompts import PromptProvider, wrap_email
 from .reader import EmailReaderClient
-from .schemas import Category, Classification, Critique
+from .schemas import Category, Classification, Critique, RecruiterContact
 from .state import (
     CONFIDENCE_THRESHOLD,
     MAX_ATTEMPTS,
@@ -30,6 +32,37 @@ from .state import (
     AgentState,
 )
 from .writer import JobRadarWriter
+
+_TAG = re.compile(r"<[^>]+>")
+# Field length caps from INTEGRATION_SPEC §3.5 — we truncate (not reject) so a long signature line
+# never fails best-effort enrichment; job-radar caps again on its side [C2r].
+_RECRUITER_CAPS = {"name": 200, "email": 255, "phone": 50, "employer": 200,
+                   "title": 200, "linkedin_url": 500}
+
+
+def _clean_recruiter(rc: RecruiterContact) -> dict[str, Any] | None:
+    """Cap lengths, strip markup, drop empties/non-http linkedin — the C2r agent-side contract.
+
+    Returns a plain dict (omitting unknowns) ready for the wire, or None if there's no usable name."""
+    out: dict[str, Any] = {}
+    for k, v in rc.model_dump(exclude_none=True).items():
+        if k == "represents":
+            reps = [_TAG.sub("", s).strip()[:200] for s in (v or []) if s and s.strip()]
+            if reps:
+                out["represents"] = reps
+        elif isinstance(v, str):
+            s = _TAG.sub("", v).strip()[: _RECRUITER_CAPS.get(k, 500)]
+            if s:
+                out[k] = s
+        else:                                    # is_agency (bool/None), recruiter_confidence (float)
+            out[k] = v
+    lu = clean_link(out.get("linkedin_url"))     # http/https allowlist, same as posting links [C2]
+    if lu:
+        out["linkedin_url"] = lu
+    else:
+        out.pop("linkedin_url", None)
+    return out if out.get("name") else None
+
 
 # category → (writes-postings?, move destination). application_confirmation handled separately.
 _CATEGORY_FOLDER = {
@@ -123,7 +156,25 @@ class Nodes:
             return "write_interaction"
         if cat == Category.network_notification:
             return "social_discard"
-        return "write_postings"  # recruiter_outreach | job_alert
+        if cat == Category.recruiter_outreach:
+            return "extract_recruiter"   # recruiter card first, then write_postings
+        return "write_postings"          # job_alert
+
+    def extract_recruiter(self, state: AgentState) -> dict[str, Any]:
+        """Dedicated, best-effort recruiter-card extraction (recruiter_outreach only). [§3.5]
+
+        Runs ONLY on recruiter emails (kept off the hot path + out of the classify/critic loop). It is
+        enrichment, never the main action: ANY failure (unparseable, rate-limit, timeout) just yields
+        no card and proceeds to write_postings — it must not block or escalate the email."""
+        email = state["email"]
+        user = wrap_email(email["subject"], email["sender"], email["body_text"])
+        try:
+            rc = self.llm.structured(
+                system=self.prompts.get("recruiter"), user=user, schema=RecruiterContact
+            )
+            return {"recruiter": _clean_recruiter(rc)}
+        except Exception:
+            return {"recruiter": None}
 
     def prepare_retry(self, state: AgentState) -> dict[str, Any]:
         issues = (state.get("critique").issues if state.get("critique") else []) or []
@@ -145,15 +196,24 @@ class Nodes:
                 "possible_duplicate": m.best is not None,
                 "matched_review_id": (m.best or {}).get("review_id"),
             })
-        resp = self.writer.create_inbox_entry({
+        # Recruiter card (recruiter_outreach only) — emit BOTH Phase 1 (nested in raw_extracted_json)
+        # and Phase 2 (typed top-level `recruiter`) so job-radar can adopt either. [§3.5]
+        recruiter = state.get("recruiter")
+        raw = c.model_dump(mode="json")
+        if recruiter:
+            raw["recruiter_contact"] = recruiter
+        payload = {
             "message_id": email["message_id"], "subject": email["subject"],
             "sender": email["sender"], "received_at": email["received_at"],
             "category": c.category.value, "confidence": c.confidence,
             "langfuse_trace_id": state.get("langfuse_trace_id"),
-            "raw_extracted_json": c.model_dump(mode="json"),
+            "raw_extracted_json": raw,
             "postings": payload_postings,
             "truncated": truncated,
-        })
+        }
+        if recruiter:
+            payload["recruiter"] = recruiter
+        resp = self.writer.create_inbox_entry(payload)
         return {"destination": _CATEGORY_FOLDER[c.category], "outcome": "processed",
                 "inbox_email_id": (resp or {}).get("inbox_email_id")}
 

@@ -11,12 +11,14 @@ from agent.llm import FakeLLM
 from agent.nodes import Nodes
 from agent.prompts import SeedPromptProvider
 from agent.reader import FakeReader
+from agent.nodes import _clean_recruiter
 from agent.schemas import (
     Category,
     Classification,
     Critique,
     InteractionSignal,
     Posting,
+    RecruiterContact,
     WritableStatus,
 )
 from agent.state import AgentState
@@ -113,6 +115,51 @@ def test_classify_propagates_infra_errors():
     nodes, *_ = make_nodes([rate_limited], [])
     with pytest.raises(RateLimitError):
         nodes.classify({"email": email(), "attempts": 0})
+
+
+def test_clean_recruiter_caps_strips_and_filters():
+    rc = RecruiterContact(
+        name="<b>Jane Smith</b>", email="jane@agency.com", phone="+1 555-1212",
+        employer="Best Recruiting", title="x" * 300,
+        linkedin_url="javascript:alert(1)", is_agency=True,
+        represents=["Acme", "  ", "<i>Beta</i>"], recruiter_confidence=0.9,
+    )
+    out = _clean_recruiter(rc)
+    assert out["name"] == "Jane Smith"               # markup stripped
+    assert len(out["title"]) == 200                   # capped
+    assert "linkedin_url" not in out                  # non-http dropped (C2 allowlist)
+    assert out["represents"] == ["Acme", "Beta"]      # blanks dropped, markup stripped
+    assert out["is_agency"] is True and out["recruiter_confidence"] == 0.9
+
+
+def test_clean_recruiter_requires_name():
+    assert _clean_recruiter(RecruiterContact(name="   ", email="x@y.com")) is None
+
+
+def test_extract_recruiter_best_effort_never_blocks():
+    # success path (direct node call pops one llm response — the recruiter card)
+    rc = RecruiterContact(name="Jane Smith", employer="Best Recruiting", is_agency=True)
+    nodes, *_ = make_nodes([rc], [])
+    assert nodes.extract_recruiter({"email": email()})["recruiter"]["name"] == "Jane Smith"
+    # failure path: any extraction error yields no card, does not raise
+    def boom(*_):
+        raise RuntimeError("rate limited")
+    nodes2, *_ = make_nodes([boom], [])
+    assert nodes2.extract_recruiter({"email": email()}) == {"recruiter": None}
+
+
+def test_recruiter_outreach_attaches_card_both_phases():
+    cls = Classification(category=Category.recruiter_outreach, confidence=0.95, reasoning="x",
+                         postings=[Posting(company="Acme", role="Staff Eng", link="https://acme/job")])
+    rc = RecruiterContact(name="Jane Smith", email="jane@agency.com", employer="Best Recruiting",
+                          is_agency=True, represents=["Acme"])
+    nodes, writer, _ = make_nodes([cls, rc], [Critique(valid=True)])
+    app = build_graph(nodes)
+    final = app.invoke({"email": email(), "attempts": 0})
+    assert final["outcome"] == "processed" and final["destination"] == "interaction"
+    payload = writer.inbox_entries[0]
+    assert payload["recruiter"]["name"] == "Jane Smith"                       # Phase 2 (typed)
+    assert payload["raw_extracted_json"]["recruiter_contact"]["name"] == "Jane Smith"  # Phase 1
 
 
 def test_write_postings_dedup_and_truncation():
