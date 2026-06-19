@@ -90,9 +90,16 @@ class Nodes:
             + "\n\nProposed classification:\n"
             + classification.model_dump_json(indent=2)
         )
-        critique = self.critic_llm.structured(
-            system=self.prompts.get("critic"), user=user, schema=Critique
-        )
+        try:
+            critique = self.critic_llm.structured(
+                system=self.prompts.get("critic"), user=user, schema=Critique
+            )
+        except ValueError as exc:
+            # Unparseable critic output (transient JSON glitch) → don't crash the email. Treat as a
+            # soft fail so the gate retries (re-running classify+critic); after MAX_ATTEMPTS it
+            # escalates to human review. Infra errors (RateLimitError/Timeout) are not ValueErrors and
+            # still propagate (runner leaves the email to retry next run). Mirrors classify().
+            return {"critique": Critique(valid=False, issues=[f"critic output unparseable: {exc}"])}
         return {"critique": critique}
 
     # ── routing functions (for conditional edges) ────────────

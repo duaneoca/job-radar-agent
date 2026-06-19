@@ -80,6 +80,28 @@ def test_classify_handles_malformed_output():
     assert out["feedback"] and "not valid structured data" in out["feedback"][0]
 
 
+def test_critic_unparseable_output_soft_fails_not_crash():
+    # A malformed critic response must retry (valid=False), not abort the email.
+    cls = Classification(category=Category.job_alert, confidence=0.9, reasoning="x")
+    def boom(*_):
+        raise ValueError("trailing characters")
+    nodes, *_ = make_nodes([cls], [boom])
+    out = nodes.critic({"classification": cls, "email": email(), "attempts": 1})
+    assert out["critique"].valid is False
+    assert "unparseable" in out["critique"].issues[0]
+
+
+def test_critic_propagates_infra_errors():
+    cls = Classification(category=Category.job_alert, confidence=0.9, reasoning="x")
+    class RateLimitError(Exception):
+        pass
+    def rate_limited(*_):
+        raise RateLimitError("429")
+    nodes, *_ = make_nodes([cls], [rate_limited])
+    with pytest.raises(RateLimitError):
+        nodes.critic({"classification": cls, "email": email(), "attempts": 1})
+
+
 def test_classify_propagates_infra_errors():
     # A rate-limit/timeout/API error is NOT a ValueError — it must propagate (so the runner leaves the
     # email in place to retry) rather than being swallowed into a misfile-to-Unprocessed escalation.
