@@ -76,8 +76,10 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
     if provider_kind == "gmail":
         from mcp_email.providers.gmail import GmailProvider
         provider = GmailProvider(root_folder=f["root"], creds_info=ec)
+    elif provider_kind == "imap":
+        from mcp_email.providers.imap import ImapProvider
+        provider = ImapProvider(creds_info=ec)
     else:
-        # No cloud-IMAP provider yet (cloud = Gmail-only). Fail loudly per user, isolated.
         raise NotImplementedError(f"cloud provider '{provider_kind}' not supported yet")
 
     root = f["root"]

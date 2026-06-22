@@ -140,7 +140,8 @@ envelope. Request **minimum** Gmail scope (label add/remove + mark-read); NEVER 
 - Gmail folders are **labels**: the same five folder fields map to nested labels
   (`<root>/Interaction`, …). UI: relabel "Folder"→"Label" for Gmail. User creates the labels.
 
-*IMAP* (forward-looking — no cloud-IMAP provider built yet; cloud = Gmail-only for now):
+*IMAP* (cloud `ImapProvider`, built 2026-06-18 — `imaplib.IMAP4_SSL` when `use_ssl`, else plain
+`IMAP4` + opportunistic STARTTLS; reuses the Proton IMAP read/move/mark logic):
 ```json
 { "provider": "imap", "host": "...", "port": 993, "username": "...", "password": "...", "use_ssl": true }
 ```

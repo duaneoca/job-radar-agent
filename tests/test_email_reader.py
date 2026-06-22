@@ -229,3 +229,61 @@ def test_get_unread_limit_caps_newest():
     p = _provider_with_fake(fake)
     msgs = p.get_unread("Folders/Hire Duane", since_days=14, limit=2)
     assert [m.subject for m in msgs] == ["new", "mid"]
+
+
+# ── generic cloud IMAP provider (mirrors Gmail; reuses ProtonProvider logic) ──
+
+def test_imap_provider_uses_tls_by_default(monkeypatch):
+    import mcp_email.providers.imap as imod
+    from mcp_email.providers.imap import ImapProvider
+    seen = {}
+
+    class FakeSSL:
+        def __init__(self, host, port, timeout=None):
+            seen["ssl"] = (host, port)
+        def login(self, u, pw):
+            seen["login"] = (u, pw)
+
+    monkeypatch.setattr(imod.imaplib, "IMAP4_SSL", FakeSSL)
+    p = ImapProvider({"host": "mail.example.com", "port": 993,
+                      "username": "u@example.com", "password": "pw"})
+    p._imap()
+    assert seen["ssl"] == ("mail.example.com", 993)        # IMAP4_SSL, not plain
+    assert seen["login"] == ("u@example.com", "pw")
+
+
+def test_imap_provider_plaintext_when_use_ssl_false(monkeypatch):
+    import mcp_email.providers.imap as imod
+    from mcp_email.providers.imap import ImapProvider
+    used = {}
+
+    class FakePlain:
+        def __init__(self, host, port, timeout=None):
+            used["plain"] = True
+        def starttls(self):
+            used["starttls"] = True
+        def login(self, u, pw):
+            used["login"] = True
+
+    class FakeSSL:
+        def __init__(self, *a, **k):
+            used["ssl"] = True
+        def login(self, *a):
+            pass
+
+    monkeypatch.setattr(imod.imaplib, "IMAP4", FakePlain)
+    monkeypatch.setattr(imod.imaplib, "IMAP4_SSL", FakeSSL)
+    p = ImapProvider({"host": "h", "port": 143, "username": "u",
+                      "password": "pw", "use_ssl": False})
+    p._imap()
+    assert used.get("plain") and not used.get("ssl")
+    assert used.get("login")
+
+
+def test_imap_provider_reuses_proton_read_logic():
+    # Inherits get_unread/BODY.PEEK/move_and_mark from ProtonProvider unchanged.
+    from mcp_email.providers.imap import ImapProvider
+    p = ImapProvider({"host": "h", "port": 993, "username": "u", "password": "pw"})
+    p._conn = _FakeIMAP()
+    msgs = p.get_unread("INBOX")
+    assert msgs and msgs[0].message_id == "<m1@x>"
