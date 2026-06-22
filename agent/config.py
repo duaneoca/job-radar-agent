@@ -38,6 +38,13 @@ class AgentSettings(BaseSettings):
     daily_spend_ceiling_usd: float = 5.0
     hitl_abandon_minutes: int = 30
 
+    # Observability (Langfuse) — optional; host defaults to US to match our project region.
+    # A blank/unset host makes the Langfuse SDK silently default to EU (cloud.langfuse.com),
+    # so we set it explicitly here and read keys from the same .env as everything else.
+    langfuse_host: str = "https://us.cloud.langfuse.com"
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+
     # Notifications
     notifier: str = "null"               # slack | telegram | discord | null
     slack_bot_token: str = ""

@@ -1,6 +1,6 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.1 (M0 draft)
+**Version:** 0.2 (adds §3.5 recruiter-contact extraction + recruiter↔posting linkage)
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
 
@@ -61,7 +61,7 @@ set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` o
 | received_at | timestamptz | |
 | category | enum | `recruiter_outreach \| application_confirmation \| job_alert \| network_notification` |
 | confidence | float | model-justified, NOT email-settable `[C1]` |
-| raw_extracted_json | jsonb | full LLM output |
+| raw_extracted_json | jsonb | full LLM output. For `recruiter_outreach`, carries `recruiter_contact` (§3.5) — the Phase-1 home for the recruiter card until the typed `recruiter` field lands |
 | validation_attempts | int | |
 | escalation_reason | text null | set when status = `needs_review` |
 | status | enum | `pending \| processed \| needs_review \| discarded` |
@@ -140,7 +140,8 @@ envelope. Request **minimum** Gmail scope (label add/remove + mark-read); NEVER 
 - Gmail folders are **labels**: the same five folder fields map to nested labels
   (`<root>/Interaction`, …). UI: relabel "Folder"→"Label" for Gmail. User creates the labels.
 
-*IMAP* (forward-looking — no cloud-IMAP provider built yet; cloud = Gmail-only for now):
+*IMAP* (cloud `ImapProvider`, built 2026-06-18 — `imaplib.IMAP4_SSL` when `use_ssl`, else plain
+`IMAP4` + opportunistic STARTTLS; reuses the Proton IMAP read/move/mark logic):
 ```json
 { "provider": "imap", "host": "...", "port": 993, "username": "...", "password": "...", "use_ssl": true }
 ```
@@ -223,7 +224,7 @@ posting of an email deletes the `inbox_emails` row (mirror existing last-review-
 |---|---|---|---|
 | `GET /agent/config` | (user from key) | `{provider, folders{...}, llm{provider, preferred_model, api_key}, email_credentials{...decrypted...}}` | **Cloud path only.** Returns DECRYPTED secrets — so it MUST be called **in-cluster** (`http://tracker-api/...`), never through Cloudflare `[H6a]`. **Local self-host path does NOT call this** — the local agent uses its own LLM key + Proton creds from local `.env`. Server-side decrypt; strongest auth; rate-limited; audit-logged. `[H6/C3]` |
 | `GET /agent/reviews` | (user from key) | `[{review_id, company, title, status, url}]` | The user's `UserJobReview` rows, for matching/dedup. |
-| `POST /agent/inbox` | inbox payload (§3.1) | `{inbox_email_id, posting_ids[]}` | Creates email + ≤30 postings. Validates link scheme `[C2]`. |
+| `POST /agent/inbox` | inbox payload (§3.1) | `{inbox_email_id, posting_ids[]}` | Creates email + ≤30 postings. Validates link scheme `[C2]`. On `recruiter_outreach` may carry a recruiter card (§3.5) — typed `recruiter` and/or `raw_extracted_json.recruiter_contact`. |
 | `POST /agent/interactions` | interaction payload (§3.2) | `{interaction_id, applied_status?}` | If matched, updates the review status + timeline (reuses existing PATCH logic) `[D9/D10]`. |
 | `POST /agent/hitl/register` | `{hitl_id, candidates[review_id]}` | `{ok}` | Agent registers a pending decision before/while posting Slack. |
 | `GET /agent/hitl/pending` | (user from key) | `[{hitl_id, status, choice_review_id}]` | Poller pulls resolved decisions `[C4]`. |
@@ -310,13 +311,15 @@ live here on the user's Email Agent page.
   "confidence": 0.93,
   "langfuse_trace_id": "trace_abc",
   "raw_extracted_json": { ... },
+  "recruiter": { ... §3.5 object; OPTIONAL, recruiter_outreach only ... },
   "postings": [
     { "company": "Acme", "role": "FDE", "link": "https://…",
       "action_required": true, "possible_duplicate": false, "matched_review_id": null }
   ]
 }
 ```
-Server: enforce ≤30 postings, http/https links only, dedup `(user_id, message_id)`.
+Server: enforce ≤30 postings, http/https links only, dedup `(user_id, message_id)`. `recruiter` is
+optional (§3.5); when present it is the email-level recruiter for every posting above.
 
 ### 3.2 `POST /agent/interactions`
 ```json
@@ -354,6 +357,73 @@ Server: if `matched_review_id` present AND `new_status` in the writable subset �
 }
 ```
 
+### 3.5 Recruiter contact (recruiter_outreach only) `[D22 extract / D23 linkage]`
+
+Job Radar never receives the email body (content minimization), so the recruiter's name, phone,
+agency, LinkedIn, and the client they represent — all in the signature/body — are extractable ONLY by
+the agent. On a `recruiter_outreach` email the agent extracts **ONE** recruiter (the sender) at the
+**email level**; every posting in that email is implicitly attributable to that recruiter `[D23]`
+(a recruiter email = this recruiter, these roles). No per-posting recruiter ref.
+
+A recruiter card is **extracted structured data — the same class as the company/role already in
+`postings`**, not email content. It therefore stays inside the content-minimization boundary.
+
+**Object** (all optional except `name`; **OMIT** unknown fields — never empty strings or guesses;
+**plain strings only — NO markup, NO raw body / free-text snippets**):
+
+| field | type | max | notes |
+|---|---|---|---|
+| `name` | string (req) | 200 | prefer the signature's full name over the From display name |
+| `email` | string | 255 | reply-to; the signature's address if it differs from `sender` |
+| `phone` | string | 50 | verbatim — do NOT normalize |
+| `employer` | string | 200 | the recruiter's own firm/agency (or the hiring company if in-house) |
+| `title` | string | 200 | e.g. "Senior Technical Recruiter" |
+| `linkedin_url` | string | 500 | full `http(s)` URL or omit (job-radar safeHref-guards it) |
+| `is_agency` | bool \| null | — | agent inference (below); `null` if unsure — don't force it |
+| `represents` | string[] | — | client companies named; agency → the clients, in-house → usually `[employer]` |
+| `recruiter_confidence` | float | — | optional; confidence in the *extraction* (≠ email-classification confidence) |
+
+**`is_agency` heuristic** (the agent has the sender domain + the posting company; job-radar only has
+the parsed strings, so this is ours to do):
+- sender domain == / a clear variant of the hiring company → in-house (`false`)
+- third-party recruiting/staffing domain, or names a client distinct from the employer → agency (`true`)
+- generic mailbox (gmail/outlook) with no corroborating signal → `null`
+
+**Linkage `[D23]`:** the email-level recruiter **is** the link — no per-posting refs. On
+import-and-confirm, job-radar auto-links the recruiter to jobs imported from that email. (If a single
+email ever genuinely mixes recruiters — not expected for `recruiter_outreach` — we'd add an optional
+`recruiter_ref` on `AgentPostingIn`. Flagged, not built.)
+
+**Phased rollout — the agent emits BOTH from day one** (job-radar accepts both during transition):
+- **Phase 1** (no wire change): nested at `raw_extracted_json.recruiter_contact` — an
+  already-persisted column; `/recruiters/suggestions` reads it. Falls out of the agent's existing
+  `raw_extracted_json = classification.model_dump()` for free.
+- **Phase 2** (typed): top-level optional `recruiter` on `POST /agent/inbox` (§3.1). Optional ⇒
+  backward-compatible; job-radar reads `recruiter` when present, else falls back to the Phase-1 key.
+
+Emitting both simultaneously lets job-radar adopt the typed field whenever ready with **no agent
+change** (answers open-Q3: yes, run both at once).
+
+**Edge cases & trust:**
+- Omit the object entirely for non-recruiter categories.
+- `recruiter_outreach` with no clean posting → still send the recruiter card (nothing to link yet;
+  fine — the CRM suggestion is still seeded).
+- Idempotent on `(user_id, message_id)`; extraction happens on first processing only — there is **no
+  re-send enrichment path** (a duplicate re-POST returns the existing row unchanged) `[§8]`.
+- **Trust `[C2]`:** all fields are attacker-controlled email content. Agent: length-cap per the table,
+  omit unknowns, no markup. job-radar (non-negotiable): length-cap, run `linkedin_url` through
+  safeHref, escape on render, and **never auto-create** — always review-and-confirm.
+
+**Object example (`recruiter` typed field == `raw_extracted_json.recruiter_contact`):**
+```json
+{
+  "name": "Jane Smith", "email": "jane@agency.com", "phone": "+1 555-1212",
+  "employer": "Best Recruiting", "title": "Senior Technical Recruiter",
+  "linkedin_url": "https://www.linkedin.com/in/janesmith",
+  "is_agency": true, "represents": ["Acme Corp"], "recruiter_confidence": 0.9
+}
+```
+
 ---
 
 ## 4. Writer MCP (Server 2) tool surface (job-radar implements)
@@ -379,6 +449,7 @@ reachable. Cloudflare→origin TLS Full (Strict). `[H3]`
 |---|---|---|
 | C1 | Email body treated as DATA (delimited); confidence model-justified; status subset enforced server-side | both |
 | C2 | URL scheme allowlist (http/https) at write AND render; sanitize/escape all agent-derived fields; never render raw HTML email | job-radar |
+| C2r | Recruiter card (§3.5) fields are agent-derived email content: job-radar length-caps each, runs `linkedin_url` through safeHref, escapes on render, and never auto-creates (review+confirm); the agent sends plain strings only (no markup/body), length-caps per the table, and omits unknowns | both |
 | C3 | Email creds encrypted with dedicated `ENCRYPTION_KEY` (JR-0); decryption server-side only | job-radar |
 | C4 | Slack callback signature-verified, rate-limited, ownership-validated | job-radar |
 | H1 | Identity derived from API key; `user_id` never trusted from request; validate ownership of every id | job-radar |

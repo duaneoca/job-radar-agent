@@ -13,7 +13,12 @@ Do NOT reject for these (they are valid):
 - a `job_alert` with only ONE posting — single-posting alerts are normal, not an error;
 - an `application_confirmation` that is a calendar/meeting/interview invitation;
 - an `application_confirmation` with `new_status = null` when the email is activity without a real
-  status change (reminder, reschedule, generic acknowledgement).
+  status change (reminder, reschedule, generic acknowledgement);
+- in a multi-posting digest, minor extraction nits: which of several URLs an aggregator (e.g. LinkedIn)
+  attaches to a posting, or company-vs-title ambiguity (a role like "FDE at Console" listed under
+  "Jack & Jill"). Postings are SURFACED for the user, not acted on, and duplicates are flagged
+  downstream — accept the best reasonable pairing rather than looping. Only reject if a posting is
+  clearly wrong or obvious postings are missing.
 
 You are a quality check, not a perfectionist — pass anything you'd reasonably act on. Return
 valid=true if so. Otherwise valid=false with concrete, specific `issues` (fed back verbatim); set

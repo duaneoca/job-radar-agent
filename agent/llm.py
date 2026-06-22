@@ -18,6 +18,16 @@ from pydantic import BaseModel
 T = TypeVar("T", bound=BaseModel)
 
 
+class LLMParseError(ValueError):
+    """Model returned output that couldn't be parsed/validated into the schema.
+
+    Subclasses ValueError so the classify node's in-loop retry (which catches ValueError) handles it,
+    while genuine infrastructure failures (RateLimitError, Timeout, API errors) — which are NOT
+    ValueErrors — propagate out and leave the email untouched for the next run instead of being
+    misfiled to Unprocessed.
+    """
+
+
 class LLMClient(Protocol):
     def structured(self, *, system: str, user: str, schema: type[T]) -> T:
         """Call the model and parse the response into `schema`. Raises on unparseable output."""

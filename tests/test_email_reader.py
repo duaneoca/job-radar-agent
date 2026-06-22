@@ -12,12 +12,47 @@ import pytest
 
 from mcp_email.config import Folders, Settings
 from mcp_email.providers.base import EmailMessage, EmailProvider
-from mcp_email.providers.proton import _best_text, _strip_html
+from mcp_email.providers.proton import _best_text, _choose_text, _strip_html
 
 
 def test_strip_html_removes_tags_scripts_styles():
     html = "<style>p{color:red}</style><p>Hello <b>world</b></p><script>evil()</script>"
     assert _strip_html(html) == "Hello world"
+
+
+def test_strip_html_preserves_link_urls():
+    # Job-alert links live in <a href>; they must survive the strip so the classifier can extract them.
+    html = '<p>FDE at Origin <a href="https://linkedin.com/jobs/view/123?ref=x">View job</a></p>'
+    out = _strip_html(html)
+    assert "https://linkedin.com/jobs/view/123?ref=x" in out
+    assert "View job (https://linkedin.com/jobs/view/123?ref=x)" in out
+
+
+def test_strip_html_drops_non_http_hrefs():
+    # Only http/https survive (matches the writer's clean_link allowlist [C2]).
+    assert "javascript" not in _strip_html('<a href="javascript:void(0)">x</a>')
+    assert "data:" not in _strip_html('<a href="data:text/html,evil">x</a>')
+
+
+def test_strip_html_strips_invisible_junk_and_keeps_structure():
+    # LinkedIn floods alerts with U+034F; postings must end up one-per-line, not a run-on blob.
+    html = ('<li>FDE at Origin͏͏ <a href="https://x.com/1">View</a></li>'
+            '<li>SWE at Acme <a href="https://x.com/2">View</a></li>')
+    out = _strip_html(html)
+    assert "͏" not in out                       # invisible junk gone
+    lines = [l for l in out.split("\n") if l.strip()]
+    assert len(lines) == 2                            # one posting per line
+    assert "Origin View (https://x.com/1)" in lines[0]
+    assert "Acme View (https://x.com/2)" in lines[1]
+
+
+def test_choose_text_uses_html_when_plain_lacks_links():
+    # LinkedIn-style: plain part has no URLs, links only in HTML → fall back to link-preserving HTML.
+    plain = "FDE at Origin\nView job"
+    html = '<a href="https://x.com/job/1">View job</a>'
+    assert _choose_text(plain, html) == "View job (https://x.com/job/1)"
+    # but a plain body that already has a URL is preferred (cleaner)
+    assert _choose_text("apply: https://y.com/1", html) == "apply: https://y.com/1"
 
 
 def test_best_text_prefers_plain_and_skips_attachments():
@@ -194,3 +229,61 @@ def test_get_unread_limit_caps_newest():
     p = _provider_with_fake(fake)
     msgs = p.get_unread("Folders/Hire Duane", since_days=14, limit=2)
     assert [m.subject for m in msgs] == ["new", "mid"]
+
+
+# ── generic cloud IMAP provider (mirrors Gmail; reuses ProtonProvider logic) ──
+
+def test_imap_provider_uses_tls_by_default(monkeypatch):
+    import mcp_email.providers.imap as imod
+    from mcp_email.providers.imap import ImapProvider
+    seen = {}
+
+    class FakeSSL:
+        def __init__(self, host, port, timeout=None):
+            seen["ssl"] = (host, port)
+        def login(self, u, pw):
+            seen["login"] = (u, pw)
+
+    monkeypatch.setattr(imod.imaplib, "IMAP4_SSL", FakeSSL)
+    p = ImapProvider({"host": "mail.example.com", "port": 993,
+                      "username": "u@example.com", "password": "pw"})
+    p._imap()
+    assert seen["ssl"] == ("mail.example.com", 993)        # IMAP4_SSL, not plain
+    assert seen["login"] == ("u@example.com", "pw")
+
+
+def test_imap_provider_plaintext_when_use_ssl_false(monkeypatch):
+    import mcp_email.providers.imap as imod
+    from mcp_email.providers.imap import ImapProvider
+    used = {}
+
+    class FakePlain:
+        def __init__(self, host, port, timeout=None):
+            used["plain"] = True
+        def starttls(self):
+            used["starttls"] = True
+        def login(self, u, pw):
+            used["login"] = True
+
+    class FakeSSL:
+        def __init__(self, *a, **k):
+            used["ssl"] = True
+        def login(self, *a):
+            pass
+
+    monkeypatch.setattr(imod.imaplib, "IMAP4", FakePlain)
+    monkeypatch.setattr(imod.imaplib, "IMAP4_SSL", FakeSSL)
+    p = ImapProvider({"host": "h", "port": 143, "username": "u",
+                      "password": "pw", "use_ssl": False})
+    p._imap()
+    assert used.get("plain") and not used.get("ssl")
+    assert used.get("login")
+
+
+def test_imap_provider_reuses_proton_read_logic():
+    # Inherits get_unread/BODY.PEEK/move_and_mark from ProtonProvider unchanged.
+    from mcp_email.providers.imap import ImapProvider
+    p = ImapProvider({"host": "h", "port": 993, "username": "u", "password": "pw"})
+    p._conn = _FakeIMAP()
+    msgs = p.get_unread("INBOX")
+    assert msgs and msgs[0].message_id == "<m1@x>"

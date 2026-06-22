@@ -143,6 +143,24 @@ def test_build_user_components_joins_sublabels_under_root():
         comp.close()
 
 
+def test_build_user_components_builds_imap_provider():
+    # Cloud IMAP users: build a generic ImapProvider from the email_credentials blob (no stub).
+    from agent.cloud import build_user_components
+    from mcp_email.providers.imap import ImapProvider
+    cfg = {"folders": {"root": "Mail", "interaction": "Mail/I", "postings": "Mail/P",
+                       "social": "Mail/S", "unprocessed": "Mail/U"},
+           "email_credentials": {"provider": "imap", "host": "imap.example.com", "port": 993,
+                                 "username": "u@example.com", "password": "pw", "use_ssl": True},
+           "llm": {"provider": "google", "preferred_model": "gemini/x", "api_key": "k"}}
+    comp = build_user_components(cfg, "u1", base_url="https://x/api", internal_token="t",
+                                since_days=14, limit=25)
+    try:
+        assert isinstance(comp.reader._p, ImapProvider)
+        assert comp.reader._p._host == "imap.example.com" and comp.reader._p._use_ssl is True
+    finally:
+        comp.close()
+
+
 def test_total_email_budget_stops_run(monkeypatch):
     users = [{"user_id": f"u{i}", "enabled": True} for i in range(5)]
     cc = _FakeConfigClient(users, {f"u{i}": _cfg() for i in range(5)})

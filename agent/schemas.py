@@ -41,6 +41,24 @@ class Posting(BaseModel):
     action_required: bool = False
 
 
+class RecruiterContact(BaseModel):
+    """One recruiter contact card extracted from a recruiter_outreach email (the sender). [§3.5]
+
+    Email-level: the whole email is this recruiter pitching these roles, so every posting is
+    attributable to them. All fields optional except name; the agent omits what it can't find rather
+    than guessing, caps lengths, and strips markup before sending (see nodes._clean_recruiter)."""
+
+    name: str
+    email: str | None = None
+    phone: str | None = None              # verbatim — not normalized
+    employer: str | None = None           # recruiter's own firm/agency (or hiring company if in-house)
+    title: str | None = None
+    linkedin_url: str | None = None       # http/https only; safeHref'd by job-radar [C2]
+    is_agency: bool | None = None         # agent inference; null if unsure
+    represents: list[str] = Field(default_factory=list)   # client companies named
+    recruiter_confidence: float | None = None             # extraction confidence (≠ classification)
+
+
 class InteractionSignal(BaseModel):
     """A status update extracted from an application_confirmation email."""
 

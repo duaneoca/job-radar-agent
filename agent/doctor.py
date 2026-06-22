@@ -5,8 +5,6 @@ Exposed as `job-radar-agent doctor`. Returns 0 if all CRITICAL checks pass, else
 
 from __future__ import annotations
 
-import os
-
 from .config import settings as A
 from mcp_email.config import folders
 from mcp_email.config import settings as E
@@ -52,7 +50,23 @@ def run() -> int:
         if provider and hasattr(provider, "close"):
             provider.close()
 
-    check(f"LLM key set ({A.llm_provider}/{A.llm_model})", bool(A.llm_api_key))
+    if not A.llm_api_key:
+        check(f"LLM key set ({A.llm_provider}/{A.llm_model})", False)
+    else:
+        # Live 1-token completion — verifies the key AND the model string actually resolve.
+        # A "key present" check passes even when the model id is wrong (e.g. a UI display name),
+        # which then fails every call mid-run.
+        try:
+            import litellm
+            from .llm_litellm import _model_string
+            litellm.completion(
+                model=_model_string(A.llm_provider, A.llm_model), api_key=A.llm_api_key,
+                messages=[{"role": "user", "content": "ping"}], max_tokens=5, timeout=30,
+            )
+            check(f"LLM reachable ({A.llm_provider}/{A.llm_model})", True)
+        except Exception as exc:
+            check(f"LLM reachable ({A.llm_provider}/{A.llm_model})", False,
+                  f"{type(exc).__name__}: {str(exc)[:160]}")
 
     if not A.agent_api_key:
         check("agent API key set", False)
@@ -68,7 +82,20 @@ def run() -> int:
         except Exception as exc:
             check("Job Radar reachable + key valid", False, f"{type(exc).__name__}: {exc}")
 
-    check("Langfuse configured", bool(os.environ.get("LANGFUSE_PUBLIC_KEY")), critical=False)
+    if not (A.langfuse_public_key and A.langfuse_secret_key):
+        check("Langfuse configured", False, "keys not set (tracing off)", critical=False)
+    else:
+        # Actually authenticate against the server — catches wrong keys AND wrong region/host,
+        # which a "keys present" check silently misses.
+        try:
+            from .observability import get_langfuse
+            lf = get_langfuse()
+            ok_lf = bool(lf and lf.auth_check())
+            check("Langfuse reachable + keys valid", ok_lf,
+                  A.langfuse_host, critical=False)
+        except Exception as exc:
+            check("Langfuse reachable + keys valid", False,
+                  f"{A.langfuse_host}: {type(exc).__name__}: {exc}", critical=False)
     check(f"notifier ({A.notifier})", A.notifier != "null", critical=False)
     check(f"daily spend ceiling ${A.daily_spend_ceiling_usd}", A.daily_spend_ceiling_usd > 0,
           "0 = disabled", critical=False)

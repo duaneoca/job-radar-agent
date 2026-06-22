@@ -51,6 +51,7 @@ class AgentState(TypedDict, total=False):
     outcome: Optional[Outcome]
     escalation_reason: Optional[str]
     inbox_email_id: Optional[str]       # returned by create_inbox_entry; for notification deep links
+    recruiter: Optional[dict[str, Any]] # recruiter card (recruiter_outreach only); cleaned dict [§3.5]
 
     # HITL (ambiguous interaction match)
     hitl_id: Optional[str]
