@@ -32,6 +32,9 @@ class AgentSettings(BaseSettings):
     llm_api_key: str = ""
     # Optional cheaper model for the Critic; falls back to the main model if unset.
     critic_model: str = ""
+    # Per-call LLM timeout (s). Kept tight: a fast model answers in <2s, so a stalled call (e.g. under
+    # account contention) should fail fast and retry rather than burn the full window × num_retries.
+    llm_timeout_seconds: float = 25.0
 
     # Run controls (mirrored from the email reader for the runner)
     max_emails_per_run: int = 100
@@ -63,14 +66,14 @@ settings = AgentSettings()
 def make_llm(settings: AgentSettings = settings) -> LLMClient:
     """Classifier LLM from local env (BYOK), Langfuse-traced when configured."""
     return LiteLLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key,
-                         langfuse=get_langfuse())
+                         langfuse=get_langfuse(), timeout=settings.llm_timeout_seconds)
 
 
 def make_critic_llm(settings: AgentSettings = settings) -> LLMClient:
     """Critic LLM — same provider/key, optionally a cheaper model (D2/Q5)."""
     model = settings.critic_model or settings.llm_model
     return LiteLLMClient(settings.llm_provider, model, settings.llm_api_key,
-                         langfuse=get_langfuse())
+                         langfuse=get_langfuse(), timeout=settings.llm_timeout_seconds)
 
 
 def make_notifier(settings: AgentSettings = settings):
@@ -104,4 +107,5 @@ def llm_from_config_bundle(bundle: dict) -> LLMClient | None:
         return None
     return LiteLLMClient(llm.get("provider", "anthropic"),
                          llm.get("preferred_model") or llm.get("model", ""),
-                         llm["api_key"], langfuse=get_langfuse())
+                         llm["api_key"], langfuse=get_langfuse(),
+                         timeout=settings.llm_timeout_seconds)

@@ -49,10 +49,27 @@ def _extract_json(text: str) -> str:
 
 _GEN_NAME = {"Classification": "classify", "Critique": "critic"}
 
+_LITELLM_QUIETED = False
+
+
+def _quiet_litellm(litellm) -> None:
+    """Silence litellm's per-exception 'Give Feedback / Provider List' banners and WARNING spam — on a
+    timeout storm these flood the log (thousands of lines) and bury real errors. Idempotent."""
+    global _LITELLM_QUIETED
+    if _LITELLM_QUIETED:
+        return
+    import logging
+    try:
+        litellm.suppress_debug_info = True       # drops the GitHub/Provider-List banners
+    except Exception:
+        pass
+    logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+    _LITELLM_QUIETED = True
+
 
 class LiteLLMClient:
     def __init__(self, provider: str, model: str, api_key: str, temperature: float = 0.0,
-                 langfuse=None, timeout: float = 60.0, num_retries: int = 2):
+                 langfuse=None, timeout: float = 25.0, num_retries: int = 2):
         self._model = _model_string(provider, model)
         self._api_key = api_key
         self._temperature = temperature
@@ -69,6 +86,8 @@ class LiteLLMClient:
         import litellm
 
         from .observability import generation
+
+        _quiet_litellm(litellm)
 
         schema_json = json.dumps(schema.model_json_schema())
         sys_full = (
