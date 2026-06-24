@@ -41,14 +41,23 @@ class RestWriter:
     def close(self) -> None:
         self._client.close()
 
+    def _raise_with_body(self, r) -> None:
+        """raise_for_status, but fold the response body into the message — a bare 4xx hides the reason
+        (e.g. a 422's FastAPI validation detail telling us WHICH field was rejected)."""
+        if r.is_error:
+            import httpx
+            detail = (r.text or "")[:500]
+            raise httpx.HTTPStatusError(
+                f"{r.status_code} for {r.request.url} — {detail}", request=r.request, response=r)
+
     def _get(self, path: str) -> Any:
         r = self._client.get(path)
-        r.raise_for_status()
+        self._raise_with_body(r)
         return r.json()
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
         r = self._client.post(path, json=payload)
-        r.raise_for_status()
+        self._raise_with_body(r)
         return r.json() if r.content else {}
 
     # ── JobRadarWriter protocol ───────────────────────────────
