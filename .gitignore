@@ -20,3 +20,6 @@ tests/fixtures/real/
 *.egg-info/
 build/
 dist/
+
+# local test state when running from the repo (AGENT_HOME=.agent-home)
+.agent-home/
