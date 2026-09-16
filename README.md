@@ -18,7 +18,7 @@ documented threat model.
 ## Architecture
 
 ```
-Email (Proton Bridge IMAP | Gmail API)
+Email (Proton Bridge IMAP local | Gmail API / generic IMAP cloud)
   → MCP Server 1 (Email Reader, stdio)
   → LangGraph agent  ⇄  Langfuse (traces + versioned prompts)
   → MCP Server 2 (Job Radar Writer, HTTPS + per-user API key)
@@ -30,4 +30,10 @@ Notifications: Slack / Telegram / Discord.  HITL: Slack buttons + pull-model res
 See `CLAUDE.md`.
 
 ## Setup
-TBD (Docker Compose for local self-host; k8s for cloud). `.env.example` documents all variables.
+**Local self-host (Proton, macOS):** see **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — the
+start-to-finish runbook (pipx install, `~/Library/Application Support/JobRadarAgent/.env`, launchd
+schedule). Use `job-radar-agent doctor` to preflight and `job-radar-agent models` to find your LLM
+model id. `.env.example` documents every variable.
+
+**Cloud (multi-user):** one GHCR image; a k8s CronJob runs `scripts/run_cloud.py`. Per-user creds +
+BYOK keys are fetched in-cluster at run start (`/agent/cloud/*`). See `INTEGRATION_SPEC.md`.

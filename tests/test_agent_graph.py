@@ -59,6 +59,29 @@ def test_gate_valid_routes():
     assert Nodes.gate(state) == "route"
 
 
+def test_gate_job_alert_posting_nits_do_not_block():
+    # Confident job_alert + critic rejection that is NOT a category dispute → route (posting quality
+    # is human-reviewed at import; critic is unreliable on dense digests).
+    cls = Classification(category=Category.job_alert, confidence=0.95, reasoning="x")
+    crit = Critique(valid=False, issues=["posting 3 company/role swapped"])  # no suggested_category
+    assert Nodes.gate({"classification": cls, "critique": crit, "attempts": 1}) == "route"
+
+
+def test_gate_job_alert_category_dispute_does_block():
+    cls = Classification(category=Category.job_alert, confidence=0.95, reasoning="x")
+    crit = Critique(valid=False, issues=["this is social noise"],
+                    suggested_category=Category.network_notification)
+    assert Nodes.gate({"classification": cls, "critique": crit, "attempts": 1}) == "retry"
+    assert Nodes.gate({"classification": cls, "critique": crit, "attempts": 2}) == "escalate"
+
+
+def test_gate_interaction_stays_strict():
+    # application_confirmation writes a real status change → critic stays authoritative.
+    cls = Classification(category=Category.application_confirmation, confidence=0.95, reasoning="x")
+    crit = Critique(valid=False, issues=["status over-claimed"])
+    assert Nodes.gate({"classification": cls, "critique": crit, "attempts": 1}) == "retry"
+
+
 def test_gate_low_confidence_retries_then_escalates():
     cls = Classification(category=Category.job_alert, confidence=0.4, reasoning="x")
     assert Nodes.gate({"classification": cls, "critique": Critique(valid=True), "attempts": 1}) == "retry"

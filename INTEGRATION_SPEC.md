@@ -91,7 +91,7 @@ set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` o
 | inbox_email_id | UUID FK | |
 | user_id | UUID FK | |
 | matched_review_id | UUID null | null ⇒ needs_review |
-| match_confidence | float | |
+| match_confidence | float **null** | null when there's no match (paired with `matched_review_id` null). MUST be nullable — the agent sends null for no-match interactions `[bugfix 2026-06-24]` |
 | previous_status | enum null | JobStatus |
 | new_status | enum null | JobStatus, agent-writable subset only |
 | applied_at | timestamptz null | when status written to the review |
@@ -329,7 +329,7 @@ optional (§3.5); when present it is the email-level recruiter for every posting
   "category": "application_confirmation",
   "confidence": 0.88, "langfuse_trace_id": "trace_xyz",
   "matched_review_id": "uuid-or-null",
-  "match_confidence": 0.91,
+  "match_confidence": 0.91,                  // float OR null — null when matched_review_id is null (no match)
   "new_status": "interviewing",
   "timeline_note": "Interview scheduled (from email)"
 }

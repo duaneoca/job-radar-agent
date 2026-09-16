@@ -16,11 +16,12 @@ repo demonstrating enterprise agentic patterns (LangGraph, Langfuse, end-to-end 
 ```
 agent/              LangGraph graph, nodes, state, scheduler entrypoint
 mcp_email/          MCP Server 1 — Email Reader (stdio)
-  providers/        base.py (interface) · proton.py (IMAP/Bridge) · gmail.py (API/OAuth)
+  providers/        base.py (interface) · proton.py (IMAP/Bridge) · gmail.py (API/OAuth) · imap.py (generic IMAP, cloud)
+agent/seed_prompts/ SEED prompts (classifier · critic · recruiter · retry_feedback); Langfuse owns the live versions
+agent/cli.py        `job-radar-agent {run|cloud|doctor|models|version}` console entrypoint
 notifications/      notifier abstraction + slack/telegram/discord (signal/whatsapp/bluebubbles stubs)
 hitl/               always-on poller that resumes checkpoints from resolved hitl_decisions
-prompts/            SEED prompt files (bootstrap Langfuse ONCE; Langfuse owns them after)
-scripts/            langfuse_seed.py, healthcheck, lock helpers
+scripts/            run_local/run_loop/run_cloud, doctor, mint_agent_key, smoke_*, gmail_auth
 docs/               agent-integration.md (pointer for the job-radar repo)
 tests/              fixtures (synthetic only — real emails are gitignored)
 ```
@@ -36,7 +37,7 @@ The Writer MCP (Server 2) does **NOT** live here — it's in `job-radar/services
 ## Architecture (data flow)
 
 ```
-Email source (Proton Bridge IMAP local | Gmail API cloud)
+Email source (Proton Bridge IMAP local | Gmail API or generic IMAP cloud)
   → MCP Server 1 (Email Reader, stdio)         [this repo]
   → LangGraph agent  ⇄ Langfuse (traces+prompts) [this repo]
   → MCP Server 2 (Job Radar Writer, HTTPS+key)  [job-radar repo]
@@ -105,7 +106,7 @@ match → `slack_hitl` (writes checkpoint, posts buttons, EXITS; resumed later b
 - **Local (Proton, self-host):** `docker-compose up` → email MCP + agent (in-container 15-min interval
   loop, lock-gated) + always-on HITL poller. Proton Bridge runs on the host; IMAP via
   `host.docker.internal:1143`.
-- **Cloud (Gmail, multi-user):** one GHCR image. k8s **CronJob** runs the agent; a long-lived
+- **Cloud (Gmail/IMAP, multi-user):** one GHCR image. k8s **CronJob** runs the agent; a long-lived
   Deployment runs the HITL flow; both share the cluster Postgres checkpointer. Per-user creds + BYOK
   keys fetched at run start via `GET /agent/config`.
 - **Scheduling:** scheduler triggers, LangGraph orchestrates one run. (Celery Beat rejected: can't
@@ -117,10 +118,13 @@ match → `slack_hitl` (writes checkpoint, posts buttons, EXITS; resumed later b
 
 ## Status
 
-Planning complete; JR-0 (job-radar credential hardening) done. M0 (contract + context) done.
-**A-2 Email Reader MCP** built + live-validated against Proton Bridge. **A-3 LangGraph agent** built
-with fakes (LLM/Writer/Reader seams) — classify→critic→retry→escalate loop, routing, matching; 18
-tests green. NOT yet wired: real LLM client (litellm), real Writer MCP (needs job-radar JR-2/JR-3),
-Langfuse spans (A-4), notifiers + HITL resume (A-5), the top-level fan-out runner + scheduler/lock.
-Next: job-radar builds JR-1/JR-2/JR-3 against the spec; here, wire the real LLM + Writer, then A-4/A-5.
-Full plan: `/Users/duaneo/Claude/General/email_pipeline/EXECUTION_PLAN.md`.
+Single-user path is **production-quality + live-verified** end-to-end (Proton → classify/critic →
+Job Radar REST → folder moves → Slack → Langfuse). Built & wired: LiteLLM client (multi-vendor BYOK),
+Langfuse spans, notifiers, the fan-out runner + lock + daily spend ceiling, the `RestWriter`,
+Gmail + generic-IMAP providers, the multi-user cloud runner (`agent/cloud.py`, unit-tested), recruiter
+extraction (§3.5), and packaging (pipx/launchd, `doctor`/`models` CLI). ~128 tests green.
+
+Remaining for multi-user go-live (job-radar-side or untested-here): live multi-user cloud E2E + k8s
+deploy; interactive HITL resume (needs `SLACK_SIGNING_SECRET`); JR-4 UI. Local prod cutover (staging→
+prod `.env`) + backlog drain pending. Detailed status: `READINESS.md`. Full plan:
+`/Users/duaneo/Claude/General/email_pipeline/EXECUTION_PLAN.md`.

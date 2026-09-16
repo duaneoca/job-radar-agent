@@ -138,16 +138,28 @@ class Nodes:
     # ── routing functions (for conditional edges) ────────────
     @staticmethod
     def gate(state: AgentState) -> str:
-        """valid → 'route'; recoverable → 'retry'; exhausted → 'escalate'."""
-        classification = state.get("classification")
-        critique = state.get("critique")
-        confident = classification is not None and classification.confidence >= CONFIDENCE_THRESHOLD
-        valid = bool(critique and critique.valid) and confident
-        if valid:
+        """valid → 'route'; recoverable → 'retry'; exhausted → 'escalate'.
+
+        The critic gates what the agent ACTS ON automatically: the category routing (all emails) and
+        status writes (application_confirmation). It does NOT gate posting-extraction quality on a
+        confident job_alert/recruiter_outreach — those postings are surfaced for the user to review at
+        import, and the critic is unreliable on dense digests (it hallucinates company/role/link
+        "swaps" on correctly-extracted emails, causing false escalations that bury good postings in
+        Unprocessed). So for those categories the critic vetoes only a CATEGORY dispute, not nits."""
+        c = state.get("classification")
+        crit = state.get("critique")
+        if c is None:                                   # unparseable classification → recover/escalate
+            return "retry" if state.get("attempts", 0) < MAX_ATTEMPTS else "escalate"
+        confident = c.confidence >= CONFIDENCE_THRESHOLD
+        category_disputed = bool(crit and crit.suggested_category
+                                 and crit.suggested_category != c.category)
+        if c.category in (Category.job_alert, Category.recruiter_outreach):
+            ok = confident and not category_disputed   # posting nits don't block (human reviews them)
+        else:                                           # interaction/social: full strict critic
+            ok = bool(crit and crit.valid) and confident
+        if ok:
             return "route"
-        if state.get("attempts", 0) < MAX_ATTEMPTS:
-            return "retry"
-        return "escalate"
+        return "retry" if state.get("attempts", 0) < MAX_ATTEMPTS else "escalate"
 
     @staticmethod
     def route_by_category(state: AgentState) -> str:
