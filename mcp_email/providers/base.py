@@ -32,6 +32,10 @@ class EmailMessage:
     body_text: str                       # text/plain, or sanitized text/html → text fallback
     has_attachments: bool = False        # flagged, never parsed (M1)
     headers: dict[str, str] = field(default_factory=dict)
+    body_html: str = ""                  # raw text/html part (V2 link extraction); never rendered
+    # Every Authentication-Results header, TOP-DOWN. A dict would keep only the last (bottom-most)
+    # one — the one a forger controls — so the sender check needs the ordered list.
+    auth_results: list[str] = field(default_factory=list)
 
 
 class EmailProvider(ABC):
@@ -67,6 +71,10 @@ class EmailProvider(ABC):
         operation; never deletes — moving relocates. (Safe: moved mail leaves the scanned root folder,
         so unread-after-move is never reprocessed.)
         """
+
+    @abstractmethod
+    def mark_read(self, message_id: str) -> None:
+        """Mark the message read WITHOUT moving it (V2: processed mail stays in the Postings folder)."""
 
     def close(self) -> None:  # optional cleanup hook
         """Release any open connection. Default no-op."""

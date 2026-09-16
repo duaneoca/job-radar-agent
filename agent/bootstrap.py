@@ -1,8 +1,8 @@
 """
-Wiring shared by the one-shot CLI (run_local) and the interval loop (run_loop).
+Wiring shared by the CLI (`job-radar-agent run`), the interval loop, and scripts/run_local.py.
 
-build_components() reads config (provider chosen by EMAIL_PROVIDER) and constructs the reader,
-writer, LLM clients, and notifier — the full local-path stack — plus a closer for cleanup.
+build_components() reads the local `.env` and constructs the full local stack: reader (Postings
+folder), writer, the link-picker LLM, sender policy, duplicate store, and notifier — plus a closer.
 """
 
 from __future__ import annotations
@@ -11,7 +11,8 @@ import os
 from dataclasses import dataclass
 from typing import Callable
 
-from .config import make_critic_llm, make_llm, make_notifier
+from .config import (make_dedup_store, make_llm, make_notifier, make_sender_policy,
+                     zero_postings_action)
 from .config import settings as agent_settings
 from .reader import ProviderReader
 from .writer_rest import RestWriter
@@ -24,8 +25,12 @@ class Components:
     reader: object
     writer: object
     llm: object
-    critic_llm: object
+    policy: object
+    dedup: object
+    zero_postings_action: str
     notifier: object
+    spend_store: object          # DailySpendStore — the $ ceiling is enforced on EVERY entry point
+    daily_ceiling: float
     inbox_base_url: str
     close: Callable[[], None]
 
@@ -35,7 +40,7 @@ def _build_provider():
         from mcp_email.providers.gmail import GmailProvider
         return GmailProvider(token_file=email_settings.gmail_token_file,
                              credentials_file=email_settings.gmail_credentials_file,
-                             root_folder=folders.root)
+                             root_folder=folders.source)
     from mcp_email.providers.proton import ProtonProvider
     return ProtonProvider(email_settings.proton_imap_host, email_settings.proton_imap_port,
                           email_settings.proton_imap_user, email_settings.proton_imap_password)
@@ -47,25 +52,25 @@ def build_components() -> Components:
     if not agent_settings.llm_api_key:
         raise SystemExit("✗ LLM_API_KEY not set")
 
-    # Email Reader transport: 'mcp' genuinely consumes the stdio Email Reader server; 'direct'
-    # (default) uses the provider in-process. Both expose the same EmailReaderClient interface.
+    # Email Reader transport: 'mcp' consumes the stdio Email Reader server; 'direct' (default) uses
+    # the provider in-process. Both expose the same EmailReaderClient interface.
     if os.environ.get("EMAIL_READER_TRANSPORT", "direct").lower() == "mcp":
         from .reader_mcp import McpReaderClient
         reader: object = McpReaderClient()
     else:
-        provider = _build_provider()
         reader = ProviderReader(
-            provider, root=folders.root,
-            dest_folders={"interaction": folders.interaction, "postings": folders.postings,
-                          "social": folders.social, "unprocessed": folders.unprocessed},
+            _build_provider(), source=folders.source,
+            dest_folders={"unprocessed": folders.unprocessed},
             since_days=email_settings.max_email_age_days if email_settings.max_email_age_days > 0 else None,
             limit=email_settings.max_emails_per_run,
         )
     writer = RestWriter(agent_settings.jobradar_api_url, agent_settings.agent_api_key)
+    dedup = make_dedup_store()
     notifier = make_notifier()
+    from .budget import DailySpendStore
 
     def _close():
-        for obj in (reader, writer, notifier):
+        for obj in (reader, writer, dedup, notifier):
             if hasattr(obj, "close"):
                 try:
                     obj.close()
@@ -73,7 +78,8 @@ def build_components() -> Components:
                     pass
 
     return Components(
-        reader=reader, writer=writer, llm=make_llm(), critic_llm=make_critic_llm(),
-        notifier=notifier, inbox_base_url=agent_settings.jobradar_api_url.replace("/api", ""),
-        close=_close,
+        reader=reader, writer=writer, llm=make_llm(), policy=make_sender_policy(), dedup=dedup,
+        zero_postings_action=zero_postings_action(), notifier=notifier,
+        spend_store=DailySpendStore(), daily_ceiling=agent_settings.daily_spend_ceiling_usd,
+        inbox_base_url=agent_settings.jobradar_api_url.replace("/api", ""), close=_close,
     )

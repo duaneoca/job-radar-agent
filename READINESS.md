@@ -1,5 +1,11 @@
 # Readiness — go-live checklist
 
+> **Agent V2 (2026-09):** the pipeline was replaced (link extraction + one LLM pick + deterministic
+> verification — `INTEGRATION_SPEC.md` §3.6). Verified on real mail in a dry run (10/10 emails,
+> $0.029, 18 s). Before inviting others: Job Radar Phase A/B (`dedup_key`, Email Policy UI), a live
+> cloud E2E, and re-enabling the agent in Job Radar settings. The checklist below is the **V1**
+> record (tag `v1-final`), kept for the infrastructure items that still apply.
+
 **What works today vs. what's required before inviting other users.** The local self-host path
 (Proton, single user) is built and tested end-to-end. The multi-user cloud path that *inviting
 others* depends on is largely not built yet.

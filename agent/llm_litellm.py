@@ -3,7 +3,7 @@ LiteLLMClient — production LLMClient backed by LiteLLM (provider-agnostic, BYO
 
 Mirrors job-radar's ai-reviewer: one client, any provider (Anthropic/OpenAI/Google/Groq), the user's
 own key. Returns structured output by instructing JSON-of-schema and validating with pydantic; on
-unparseable output it RAISES, which the classify node turns into a validation-loop retry (not a crash).
+unparseable output it RAISES LLMParseError, which the pick node turns into a retry (not a crash).
 
 `preferred_model` from job-radar is already a LiteLLM model string; if it lacks a provider prefix we
 add one based on `provider`. The key is passed per-call (never set as a global/env mutation).
@@ -47,7 +47,7 @@ def _extract_json(text: str) -> str:
     return s
 
 
-_GEN_NAME = {"Classification": "classify", "Critique": "critic"}
+_GEN_NAME = {"LinkPicks": "pick_links"}
 
 _LITELLM_QUIETED = False
 

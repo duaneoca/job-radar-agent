@@ -37,8 +37,14 @@ def run_loop(*, once: bool, dry_run: bool, interval: int,
         while True:
             res = run_once(
                 reader=components.reader, writer=components.writer,
-                llm=components.llm, critic_llm=components.critic_llm,
-                prompts=SeedPromptProvider(), notifier=components.notifier,
+                llm=components.llm, prompts=SeedPromptProvider(),
+                policy=components.policy, dedup=components.dedup,
+                zero_postings_action=components.zero_postings_action,
+                notifier=components.notifier,
+                # V1 bug: the scheduled path never passed these, so the daily $ ceiling was
+                # silently NOT enforced under launchd. Always pass them.
+                spend_key="local", daily_ceiling=components.daily_ceiling,
+                spend_store=components.spend_store,
                 inbox_base_url=components.inbox_base_url, environment="local", dry_run=dry_run,
             )
             iterations += 1
@@ -46,8 +52,11 @@ def run_loop(*, once: bool, dry_run: bool, interval: int,
             if getattr(res, "skipped", False):
                 print(f"[{ts}] skipped (lock held)")
             else:
-                print(f"[{ts}] {res.status} processed={res.emails_processed} "
-                      f"postings={res.postings_created} escalations={res.escalations}")
+                print(f"[{ts}] {res.status} emails={res.emails_processed} "
+                      f"postings={res.postings_created} duplicates={res.duplicates_skipped} "
+                      f"unprocessed={res.escalations} retries={res.retries}")
+                for e in res.errors[:10]:
+                    print(f"    ! {e}")
             if once or _STOP["flag"]:
                 break
             for _ in range(interval):

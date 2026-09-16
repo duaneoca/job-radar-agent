@@ -1,14 +1,15 @@
 """
 Email Reader MCP server (Server 1) — stdio transport.
 
-Exposes a deliberately small, read-mostly tool surface to the LangGraph agent:
-    list_folders()                         — all folders + the resolved Job Radar layout
-    get_unread_emails()                    — UNREAD mail in the configured ROOT folder only
+Exposes a deliberately small tool surface to the agent (V2):
+    list_folders()                         — all folders + the resolved layout
+    get_unread_emails()                    — UNREAD mail in the Postings (source) folder only
     get_email_by_id(message_id)            — fetch one message by RFC 822 Message-ID
-    move_and_mark(message_id, destination) — atomic mark-read + move (the ONLY mutation)
+    mark_read(message_id)                  — mark read in place (processed mail)
+    move_and_mark(message_id, destination) — move to Unprocessed (the only move)
 
-There is no delete/archive tool, by design (guardrail by absence). `destination` is validated
-against the configured subfolders so the agent cannot move mail to arbitrary locations.
+There is no delete/archive tool, by design (guardrail by absence). `destination` is validated so the
+agent cannot move mail anywhere except the configured Unprocessed folder.
 
 Run:  python -m mcp_email.server     (stdio; launched by the agent / docker-compose)
 """
@@ -45,7 +46,7 @@ def _get_provider() -> EmailProvider:
             _provider = GmailProvider(
                 token_file=settings.gmail_token_file,
                 credentials_file=settings.gmail_credentials_file,
-                root_folder=folders.root,
+                root_folder=folders.source,
             )
         else:
             raise ValueError(f"unknown EMAIL_PROVIDER: {settings.email_provider}")
@@ -63,15 +64,11 @@ def list_folders() -> dict:
     """List all mailbox folders and the resolved Job Radar folder layout (root + subfolders)."""
     provider = _get_provider()
     existing = provider.list_folders()
-    expected = folders.all_subfolders()
-    missing = [f for f in [folders.root, *expected] if f not in existing]
+    missing = [f for f in folders.v2_folders() if f not in existing]
     return {
         "folders": existing,
         "layout": {
-            "root": folders.root,
-            "interaction": folders.interaction,
-            "postings": folders.postings,
-            "social": folders.social,
+            "source": folders.source,
             "unprocessed": folders.unprocessed,
         },
         # The agent does NOT create folders — the user does. Surface missing ones as a warning. [D6]
@@ -82,7 +79,7 @@ def list_folders() -> dict:
 @mcp.tool()
 def get_unread_emails(limit: int | None = None) -> list[dict]:
     """
-    Return UNREAD emails in the configured ROOT folder only, NEWEST-FIRST. Read mail is the human's;
+    Return UNREAD emails in the Postings (source) folder only, NEWEST-FIRST. Read mail is the human's;
     the agent leaves it alone. To hand an already-read email to the agent, mark it unread.
 
     Honors MAX_EMAIL_AGE_DAYS (old backlog is never fetched) and caps the result at `limit` or
@@ -91,7 +88,7 @@ def get_unread_emails(limit: int | None = None) -> list[dict]:
     provider = _get_provider()
     since = settings.max_email_age_days if settings.max_email_age_days > 0 else None
     cap = limit or settings.max_emails_per_run
-    return [_serialize(m) for m in provider.get_unread(folders.root, since_days=since, limit=cap)]
+    return [_serialize(m) for m in provider.get_unread(folders.source, since_days=since, limit=cap)]
 
 
 @mcp.tool()
@@ -103,19 +100,19 @@ def get_email_by_id(message_id: str) -> dict | None:
 
 
 @mcp.tool()
+def mark_read(message_id: str) -> dict:
+    """Mark an email read without moving it (V2: processed mail stays in the Postings folder)."""
+    _get_provider().mark_read(message_id)
+    return {"marked_read": message_id}
+
+
+@mcp.tool()
 def move_and_mark(message_id: str, destination: str, mark_read: bool = True) -> dict:
     """
-    Move an email to one of the Job Radar subfolders (interaction | postings | social | unprocessed),
-    optionally marking it read. `mark_read=False` leaves it UNREAD (used for interaction mail so
-    high-value items stay visibly unread). The only mutating action; never deletes mail.
-    `destination` is a logical name, validated against the configured layout.
+    Move an email to the Unprocessed folder (the only destination V2 uses), optionally marking it
+    read. `destination` is a logical name, validated against the configured layout. Never deletes.
     """
-    dest_map = {
-        "interaction": folders.interaction,
-        "postings": folders.postings,
-        "social": folders.social,
-        "unprocessed": folders.unprocessed,
-    }
+    dest_map = {"unprocessed": folders.unprocessed}
     if destination not in dest_map:
         raise ValueError(
             f"invalid destination '{destination}'; expected one of {sorted(dest_map)}"

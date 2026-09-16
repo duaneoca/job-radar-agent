@@ -1,302 +1,209 @@
 """
-Graph nodes + routing functions.
+Graph nodes + routing functions for the V2 link-picker pipeline.
 
-Flow:  classify → critic → gate →  retry (→ classify)  |  route  |  escalate
-       route → {write_postings | write_interaction | social_discard} → finalize → END
-       escalate → finalize → END
+Flow (one email):
+  screen ─┬─ (sender rejected) ───────────────────────────────────────────────┐
+          ├─ (no links) ─→ no_postings ───────────────────────────────────────┤
+          └─ pick → verify → gate ─┬─ write ──────────────────────────────────┤→ finalize → END
+                                   ├─ retry → prepare_retry → pick (max 3)     │
+                                   └─ escalate (→ Unprocessed) ────────────────┘
 
-A single `finalize` node performs the one mutation (move_and_mark), so moving mail lives in exactly
-one place. The HITL path (ambiguous interaction) sets no destination and ends awaiting resolution.
+Exactly one LLM call per attempt (`pick`); everything else is deterministic. `finalize` is the single
+place that changes the mailbox: mark the email read in place, or move it to Unprocessed.
 
-`Nodes` holds the injected dependencies (LLM, Critic LLM, Writer, Reader, Prompts) so the whole
-graph is unit-testable with fakes. Node methods return partial-state dicts (LangGraph merges them).
+LLM infrastructure errors (rate limit / timeout / 5xx) are NOT caught here — they propagate so the
+runner leaves the email unread and it is retried on the next run instead of being misfiled.
 """
 
 from __future__ import annotations
 
-import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any
 
-import re
-
 from . import matching
-from .links import clean_link
+from .dedup import DedupStore, NullDedupStore, dedup_key
+from .extract import LinkCandidate, extract_links, render_candidates
 from .llm import LLMClient
-from .prompts import PromptProvider, wrap_email
+from .prompts import PromptProvider
 from .reader import EmailReaderClient
-from .schemas import Category, Classification, Critique, RecruiterContact
-from .state import (
-    CONFIDENCE_THRESHOLD,
-    MAX_ATTEMPTS,
-    MAX_POSTINGS_PER_EMAIL,
-    AgentState,
-)
+from .schemas import LinkPicks
+from .senders import SenderPolicy
+from .state import MAX_ATTEMPTS, MAX_POSTINGS_PER_EMAIL, AgentState
+from .verify import verify_picks
 from .writer import JobRadarWriter
 
-_TAG = re.compile(r"<[^>]+>")
-# Field length caps from INTEGRATION_SPEC §3.5 — we truncate (not reject) so a long signature line
-# never fails best-effort enrichment; job-radar caps again on its side [C2r].
-_RECRUITER_CAPS = {"name": 200, "email": 255, "phone": 50, "employer": 200,
-                   "title": 200, "linkedin_url": 500}
+ZERO_POSTINGS_ACTIONS = ("mark_read", "unprocessed")
+PROMPT_NAME = "link_picker"
 
 
-def _clean_recruiter(rc: RecruiterContact) -> dict[str, Any] | None:
-    """Cap lengths, strip markup, drop empties/non-http linkedin — the C2r agent-side contract.
-
-    Returns a plain dict (omitting unknowns) ready for the wire, or None if there's no usable name."""
-    out: dict[str, Any] = {}
-    for k, v in rc.model_dump(exclude_none=True).items():
-        if k == "represents":
-            reps = [_TAG.sub("", s).strip()[:200] for s in (v or []) if s and s.strip()]
-            if reps:
-                out["represents"] = reps
-        elif isinstance(v, str):
-            s = _TAG.sub("", v).strip()[: _RECRUITER_CAPS.get(k, 500)]
-            if s:
-                out[k] = s
-        else:                                    # is_agency (bool/None), recruiter_confidence (float)
-            out[k] = v
-    lu = clean_link(out.get("linkedin_url"))     # http/https allowlist, same as posting links [C2]
-    if lu:
-        out["linkedin_url"] = lu
-    else:
-        out.pop("linkedin_url", None)
-    return out if out.get("name") else None
+def _safe(s: str) -> str:
+    return (s or "").replace("<", "").replace(">", "")
 
 
-# category → (writes-postings?, move destination). application_confirmation handled separately.
-_CATEGORY_FOLDER = {
-    Category.recruiter_outreach: "interaction",
-    Category.job_alert: "postings",
-    Category.application_confirmation: "interaction",
-    Category.network_notification: "social",
-}
+def build_user_message(subject: str, candidates: list[LinkCandidate], feedback: list[str]) -> str:
+    """The model's input: subject + numbered links, plus corrective notes on a retry.
+
+    Feedback lines come only from the verifier and reference our own link numbers — the model's
+    previous (wrong) answer is never sent back.
+    """
+    lines = [
+        f"Email subject (data): {_safe(subject)}",
+        "",
+        "<links>",
+        render_candidates(candidates),
+        "</links>",
+    ]
+    if feedback:
+        lines += ["", "Your previous answer had these problems. Answer again from the list above, "
+                      "fixing them:"]
+        lines += [f"- {f}" for f in feedback]
+    return "\n".join(lines)
 
 
 class Nodes:
     def __init__(
         self,
         llm: LLMClient,
-        critic_llm: LLMClient,
         writer: JobRadarWriter,
         reader: EmailReaderClient,
         prompts: PromptProvider,
+        *,
+        policy: SenderPolicy | None = None,
+        dedup: DedupStore | None = None,
+        zero_postings_action: str = "mark_read",
+        max_postings: int = MAX_POSTINGS_PER_EMAIL,
     ):
+        if zero_postings_action not in ZERO_POSTINGS_ACTIONS:
+            raise ValueError(f"zero_postings_action must be one of {ZERO_POSTINGS_ACTIONS}")
         self.llm = llm
-        self.critic_llm = critic_llm
         self.writer = writer
         self.reader = reader
         self.prompts = prompts
+        self.policy = policy or SenderPolicy()
+        self.dedup = dedup or NullDedupStore()
+        self.zero_postings_action = zero_postings_action
+        self.max_postings = max_postings
 
-    # ── classify ⇄ critic loop ────────────────────────────────
-    def classify(self, state: AgentState) -> dict[str, Any]:
+    # ── deterministic screening ───────────────────────────────
+    def screen(self, state: AgentState) -> dict[str, Any]:
         email = state["email"]
-        user = wrap_email(email["subject"], email["sender"], email["body_text"])
-        feedback = state.get("feedback") or []
-        if feedback:
-            tmpl = self.prompts.get("retry_feedback")
-            user = tmpl.format(issues="\n".join(f"- {i}" for i in feedback)) + "\n\n" + user
+        reason = self.policy.check(email.get("sender", ""), email.get("auth_results") or [])
+        if reason:
+            return {"candidates": [], "outcome": "needs_review", "destination": "unprocessed",
+                    "reason": reason}
+        candidates = extract_links(email.get("body_html", ""), email.get("body_text", ""))
+        return {"candidates": candidates, "attempts": 0, "feedback": [], "issues": []}
+
+    @staticmethod
+    def after_screen(state: AgentState) -> str:
+        if state.get("outcome") == "needs_review":
+            return "finalize"
+        return "pick" if state.get("candidates") else "no_postings"
+
+    # ── the one LLM call ──────────────────────────────────────
+    def pick(self, state: AgentState) -> dict[str, Any]:
         attempts = state.get("attempts", 0) + 1
+        user = build_user_message(state["email"].get("subject", ""), state["candidates"],
+                                  state.get("feedback") or [])
         try:
-            classification = self.llm.structured(
-                system=self.prompts.get("classifier"), user=user, schema=Classification
-            )
-        except ValueError as exc:
-            # Malformed/unparseable model output (incl. LLMParseError, pydantic ValidationError) is a
-            # recoverable validation failure → in-loop retry. Infrastructure errors (RateLimitError,
-            # Timeout, API/5xx) are NOT ValueErrors: they propagate so the runner leaves the email in
-            # place to retry next run, instead of misfiling a perfectly good email to Unprocessed.
-            return {
-                "attempts": attempts,
-                "classification": None,
-                "feedback": feedback + [f"previous output was not valid structured data: {exc}"],
-            }
-        return {"attempts": attempts, "classification": classification}
+            picks = self.llm.structured(system=self.prompts.get(PROMPT_NAME), user=user,
+                                        schema=LinkPicks)
+        except ValueError:
+            # Unparseable / wrong-shape output is a retryable mistake (infra errors propagate).
+            return {"attempts": attempts, "picks": None, "verified": [],
+                    "issues": ["Your reply was not a single JSON object in the required format."]}
+        return {"attempts": attempts, "picks": picks}
 
-    def critic(self, state: AgentState) -> dict[str, Any]:
-        classification = state.get("classification")
-        if classification is None:
-            return {"critique": Critique(valid=False, issues=["no parseable classification"])}
-        email = state["email"]
-        user = (
-            wrap_email(email["subject"], email["sender"], email["body_text"])
-            + "\n\nProposed classification:\n"
-            + classification.model_dump_json(indent=2)
-        )
-        try:
-            critique = self.critic_llm.structured(
-                system=self.prompts.get("critic"), user=user, schema=Critique
-            )
-        except ValueError as exc:
-            # Unparseable critic output (transient JSON glitch) → don't crash the email. Treat as a
-            # soft fail so the gate retries (re-running classify+critic); after MAX_ATTEMPTS it
-            # escalates to human review. Infra errors (RateLimitError/Timeout) are not ValueErrors and
-            # still propagate (runner leaves the email to retry next run). Mirrors classify().
-            return {"critique": Critique(valid=False, issues=[f"critic output unparseable: {exc}"])}
-        return {"critique": critique}
+    # ── deterministic verification ────────────────────────────
+    def verify(self, state: AgentState) -> dict[str, Any]:
+        picks = state.get("picks")
+        if picks is None:
+            return {}                                  # pick() already recorded the issue
+        verdict = verify_picks(picks, state["candidates"], max_postings=self.max_postings)
+        return {"issues": verdict.issues, "truncated": verdict.truncated,
+                "verified": [asdict(p) for p in verdict.postings]}
 
-    # ── routing functions (for conditional edges) ────────────
     @staticmethod
     def gate(state: AgentState) -> str:
-        """valid → 'route'; recoverable → 'retry'; exhausted → 'escalate'.
-
-        The critic gates what the agent ACTS ON automatically: the category routing (all emails) and
-        status writes (application_confirmation). It does NOT gate posting-extraction quality on a
-        confident job_alert/recruiter_outreach — those postings are surfaced for the user to review at
-        import, and the critic is unreliable on dense digests (it hallucinates company/role/link
-        "swaps" on correctly-extracted emails, causing false escalations that bury good postings in
-        Unprocessed). So for those categories the critic vetoes only a CATEGORY dispute, not nits."""
-        c = state.get("classification")
-        crit = state.get("critique")
-        if c is None:                                   # unparseable classification → recover/escalate
-            return "retry" if state.get("attempts", 0) < MAX_ATTEMPTS else "escalate"
-        confident = c.confidence >= CONFIDENCE_THRESHOLD
-        category_disputed = bool(crit and crit.suggested_category
-                                 and crit.suggested_category != c.category)
-        if c.category in (Category.job_alert, Category.recruiter_outreach):
-            ok = confident and not category_disputed   # posting nits don't block (human reviews them)
-        else:                                           # interaction/social: full strict critic
-            ok = bool(crit and crit.valid) and confident
-        if ok:
-            return "route"
+        if not state.get("issues"):
+            return "write"
         return "retry" if state.get("attempts", 0) < MAX_ATTEMPTS else "escalate"
 
     @staticmethod
-    def route_by_category(state: AgentState) -> str:
-        cat = state["classification"].category
-        if cat == Category.application_confirmation:
-            return "write_interaction"
-        if cat == Category.network_notification:
-            return "social_discard"
-        if cat == Category.recruiter_outreach:
-            return "extract_recruiter"   # recruiter card first, then write_postings
-        return "write_postings"          # job_alert
-
-    def extract_recruiter(self, state: AgentState) -> dict[str, Any]:
-        """Dedicated, best-effort recruiter-card extraction (recruiter_outreach only). [§3.5]
-
-        Runs ONLY on recruiter emails (kept off the hot path + out of the classify/critic loop). It is
-        enrichment, never the main action: ANY failure (unparseable, rate-limit, timeout) just yields
-        no card and proceeds to write_postings — it must not block or escalate the email."""
-        email = state["email"]
-        user = wrap_email(email["subject"], email["sender"], email["body_text"])
-        try:
-            rc = self.llm.structured(
-                system=self.prompts.get("recruiter"), user=user, schema=RecruiterContact
-            )
-            return {"recruiter": _clean_recruiter(rc)}
-        except Exception:
-            return {"recruiter": None}
-
-    def prepare_retry(self, state: AgentState) -> dict[str, Any]:
-        issues = (state.get("critique").issues if state.get("critique") else []) or []
-        return {"feedback": (state.get("feedback") or []) + issues}
+    def prepare_retry(state: AgentState) -> dict[str, Any]:
+        return {"feedback": list(state.get("issues") or [])}
 
     # ── terminal actions ──────────────────────────────────────
-    def write_postings(self, state: AgentState) -> dict[str, Any]:
+    def no_postings(self, state: AgentState) -> dict[str, Any]:
+        if self.zero_postings_action == "unprocessed":
+            return {"outcome": "no_postings", "destination": "unprocessed",
+                    "reason": "no job postings found in the email"}
+        return {"outcome": "no_postings", "mark_read": True}
+
+    def write(self, state: AgentState) -> dict[str, Any]:
+        verified = state.get("verified") or []
+        if not verified:
+            return self.no_postings(state)
+
         email = state["email"]
-        c: Classification = state["classification"]
         reviews = self.writer.get_reviews()
-        postings = c.postings[:MAX_POSTINGS_PER_EMAIL]
-        truncated = len(c.postings) > MAX_POSTINGS_PER_EMAIL
-        payload_postings = []
-        for p in postings:
-            m = matching.match(p.company, p.role, reviews)
-            payload_postings.append({
-                "company": p.company, "role": p.role, "link": clean_link(p.link),
-                "action_required": p.action_required,
+        new: list[dict[str, Any]] = []
+        dup_keys: list[str] = []
+        for v in verified:
+            key = dedup_key(v["url"], v["company"], v["title"])
+            if self.dedup.seen(key):
+                dup_keys.append(key)
+                continue
+            m = matching.match(v["company"], v["title"], reviews)
+            new.append({
+                "company": v["company"], "role": v["title"], "link": v["url"],
+                "action_required": False,
                 "possible_duplicate": m.best is not None,
                 "matched_review_id": (m.best or {}).get("review_id"),
+                "dedup_key": key,
             })
-        # Recruiter card (recruiter_outreach only) — emit BOTH Phase 1 (nested in raw_extracted_json)
-        # and Phase 2 (typed top-level `recruiter`) so job-radar can adopt either. [§3.5]
-        recruiter = state.get("recruiter")
-        raw = c.model_dump(mode="json")
-        if recruiter:
-            raw["recruiter_contact"] = recruiter
-        payload = {
-            "message_id": email["message_id"], "subject": email["subject"],
-            "sender": email["sender"], "received_at": email["received_at"],
-            "category": c.category.value, "confidence": c.confidence,
+
+        if not new:
+            self.dedup.add(dup_keys)                   # refresh the window for re-sent jobs
+            return {"outcome": "duplicates_only", "mark_read": True, "postings_written": 0,
+                    "duplicates_skipped": len(dup_keys)}
+
+        resp = self.writer.create_inbox_entry({
+            "message_id": email["message_id"], "subject": email.get("subject", ""),
+            "sender": email.get("sender", ""),
+            # Job Radar requires received_at; an email with no Date header falls back to "now".
+            "received_at": email.get("received_at") or datetime.now(timezone.utc).isoformat(),
+            "category": "job_alert",
+            "confidence": 1.0,                         # every posting passed deterministic checks
             "langfuse_trace_id": state.get("langfuse_trace_id"),
-            "raw_extracted_json": raw,
-            "postings": payload_postings,
-            "truncated": truncated,
-        }
-        if recruiter:
-            payload["recruiter"] = recruiter
-        resp = self.writer.create_inbox_entry(payload)
-        return {"destination": _CATEGORY_FOLDER[c.category], "outcome": "processed",
-                "inbox_email_id": (resp or {}).get("inbox_email_id")}
-
-    def write_interaction(self, state: AgentState) -> dict[str, Any]:
-        email = state["email"]
-        c: Classification = state["classification"]
-        sig = c.interaction
-        reviews = self.writer.get_reviews()
-        result = matching.match(sig.company if sig else "", sig.role if sig else None, reviews)
-
-        if result.ambiguous:
-            # Pause for human disambiguation: register, post buttons (A-5), exit without moving.
-            hitl_id = str(uuid.uuid4())
-            candidates = [
-                {"review_id": r["review_id"], "label": f'{r.get("company")} — {r.get("title")}'}
-                for r in result.candidates if r["_score"] >= matching.STRONG
-            ]
-            self.writer.register_hitl(hitl_id, candidates)
-            return {
-                "hitl_id": hitl_id, "hitl_candidates": candidates,
-                "destination": None, "outcome": "awaiting_hitl",
-            }
-
-        matched = result.best if result.unique_strong else None
-        self.writer.record_interaction({
-            "message_id": email["message_id"], "subject": email["subject"],
-            "sender": email["sender"], "received_at": email["received_at"],
-            "category": c.category.value, "confidence": c.confidence,
-            "langfuse_trace_id": state.get("langfuse_trace_id"),
-            "matched_review_id": (matched or {}).get("review_id"),
-            "match_confidence": (matched or {}).get("_score"),
-            "new_status": sig.new_status.value if (sig and sig.new_status) else None,
-            "timeline_note": sig.summary if sig else "",
+            "raw_extracted_json": {
+                "pipeline": "v2-link-picker",
+                "attempts": state.get("attempts"),
+                "links_considered": len(state.get("candidates") or []),
+                "postings": [{"link_id": v["link_id"], "title": v["title"],
+                              "company": v["company"]} for v in verified],
+                "duplicates_skipped": len(dup_keys),
+            },
+            "postings": new,
+            "truncated": bool(state.get("truncated")),
         })
-        if matched:
-            return {"matched_review_id": matched["review_id"],
-                    "destination": "interaction", "outcome": "processed"}
-        # No tracked-job match — but interaction mail (interview invites, recruiter replies) is
-        # high-value and must stay VISIBLE. File to Interaction (not Unprocessed); flag for review
-        # so the human can match it. Missing an interview invite is the worst-case failure.
-        return {"destination": "interaction", "outcome": "needs_review",
-                "escalation_reason": "no confident job match — filed to Interaction for review"}
-
-    def social_discard(self, state: AgentState) -> dict[str, Any]:
-        email = state["email"]
-        c: Classification = state["classification"]
-        self.writer.create_inbox_entry({
-            "message_id": email["message_id"], "subject": email["subject"],
-            "sender": email["sender"], "received_at": email["received_at"],
-            "category": c.category.value, "confidence": c.confidence,
-            "langfuse_trace_id": state.get("langfuse_trace_id"),
-            "raw_extracted_json": c.model_dump(mode="json"), "postings": [],
-        })
-        return {"destination": "social", "outcome": "discarded"}
+        # Only after Job Radar accepted the write — a failed write must not hide these postings.
+        self.dedup.add([p["dedup_key"] for p in new] + dup_keys)
+        return {"outcome": "processed", "mark_read": True,
+                "inbox_email_id": (resp or {}).get("inbox_email_id"),
+                "postings_written": len(new), "duplicates_skipped": len(dup_keys)}
 
     def escalate(self, state: AgentState) -> dict[str, Any]:
-        critique = state.get("critique")
-        issues = (critique.issues if critique else []) or ["validation failed"]
-        return {
-            "destination": "unprocessed", "outcome": "needs_review",
-            "escalation_reason": "; ".join(issues),
-        }
+        return {"outcome": "needs_review", "destination": "unprocessed",
+                "reason": (f"link picks failed verification after {state.get('attempts', 0)} "
+                           f"attempts ({len(state.get('issues') or [])} open issue(s))")}
 
     def finalize(self, state: AgentState) -> dict[str, Any]:
-        """The single mutation point: move the email if a destination was chosen.
-
-        Interactions are left UNREAD so high-value items (interview invites, recruiter replies) stay
-        visibly unread in the Interaction folder; everything else is marked read.
-        """
-        dest = state.get("destination")
-        if dest:
-            self.reader.move_and_mark(state["email"]["message_id"], dest,
-                                      mark_read=(dest != "interaction"))
+        """The single mailbox mutation: move to Unprocessed, or mark read in place."""
+        message_id = state["email"]["message_id"]
+        if state.get("destination"):
+            self.reader.move_and_mark(message_id, state["destination"], mark_read=True)
+        elif state.get("mark_read"):
+            self.reader.mark_read(message_id)
         return {}

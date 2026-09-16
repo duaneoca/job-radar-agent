@@ -2,7 +2,7 @@
 McpReaderClient — consume the Email Reader MCP (Server 1) over stdio.
 
 This is the "agent genuinely consumes an MCP server at runtime" path. It spawns
-`python -m mcp_email.server` as a subprocess and calls its tools (`get_unread_emails`,
+`python -m mcp_email.server` as a subprocess and calls its tools (`get_unread_emails`, `mark_read`,
 `move_and_mark`) over the MCP stdio transport, exposing the same `EmailReaderClient` interface as the
 direct `ProviderReader`. Selectable via `EMAIL_READER_TRANSPORT=mcp`.
 
@@ -70,6 +70,9 @@ class McpReaderClient:
     def get_unread(self) -> list[EmailRef]:
         data = self._call("get_unread_emails", {})
         return data or []
+
+    def mark_read(self, message_id: str) -> None:
+        self._call("mark_read", {"message_id": message_id})
 
     def move_and_mark(self, message_id: str, destination: Destination,
                       mark_read: bool = True) -> None:

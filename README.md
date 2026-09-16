@@ -2,38 +2,43 @@
 
 [![CI](https://github.com/duaneoca/job-radar-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/duaneoca/job-radar-agent/actions/workflows/ci.yml)
 
-An agentic email-processing pipeline that reads job-related email, classifies and extracts
-structured data with an LLM, self-validates through a Classifier→Critic loop, escalates ambiguous
-cases to a human via interactive Slack, and writes results into [Job Radar](https://job-radar.net)'s
-Inbox through a custom MCP server.
+Turns job-alert emails (LinkedIn, Glassdoor, Indeed, Monster, …) into postings in
+[Job Radar](https://job-radar.net)'s Inbox — for about **$0.003 per email**.
 
-Built to demonstrate enterprise agentic patterns end-to-end: **LangGraph** orchestration with
-validation loops and durable human-in-the-loop, **Langfuse** observability and prompt management,
-**Model Context Protocol** (consuming *and* publishing servers), multi-tenant BYOK deployment, and a
-documented threat model.
+A mail filter (e.g. a Proton sieve rule) sorts job alerts into a `Postings` folder. For each unread
+email there, the agent:
 
-> Status: in development. See `INTEGRATION_SPEC.md` for the contract with Job Radar, `CLAUDE.md` for
-> architecture and conventions, and `SECURITY.md` for the threat model.
+1. **Screens the sender** — domain allow-list + DMARC check. No LLM spend on anything suspicious.
+2. **Extracts every link** from the HTML into a short numbered list (text, safe URL, nearby text).
+3. **Asks an LLM once** which numbers are job postings, and for each one's title and company.
+4. **Verifies deterministically** that every title and company really appears next to that link.
+   Mistakes get up to two retries with corrective instructions only — the wrong answer is never
+   fed back. Anything still wrong goes to an `Unprocessed` folder.
+5. **Writes new postings** (duplicates across emails suppressed) and marks the email read.
 
-## Architecture
+The model never produces a URL and never sees the raw email — it only chooses from links the code
+extracted, and everything it says is checked against the email.
 
 ```
-Email (Proton Bridge IMAP local | Gmail API / generic IMAP cloud)
-  → MCP Server 1 (Email Reader, stdio)
-  → LangGraph agent  ⇄  Langfuse (traces + versioned prompts)
-  → MCP Server 2 (Job Radar Writer, HTTPS + per-user API key)
-  → Job Radar: Inbox page + Ops dashboard
-Notifications: Slack / Telegram / Discord.  HITL: Slack buttons + pull-model resume.
+Postings folder (Proton Bridge IMAP | Gmail API | IMAP)
+  → screen (allow-list + DMARC) → extract links → LLM pick → verify ⟲ ×3
+  → dedup → POST /agent/inbox → mark read          (or → Unprocessed)
+Tracing: Langfuse.  Orchestration: LangGraph.  Mailbox access: MCP Server 1 (stdio) or in-process.
 ```
 
-## Repository layout
-See `CLAUDE.md`.
+## History
+**V1** (tag [`v1-final`](https://github.com/duaneoca/job-radar-agent/tree/v1-final)) classified
+every job-related email with an LLM and audited it with a second "critic" call. It worked, but cost
+~$1/email, ran slowly, and duplicated what a mail filter already does. The tag message has the full
+retrospective.
 
 ## Setup
-**Local self-host (Proton, macOS):** see **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — the
-start-to-finish runbook (pipx install, `~/Library/Application Support/JobRadarAgent/.env`, launchd
-schedule). Use `job-radar-agent doctor` to preflight and `job-radar-agent models` to find your LLM
-model id. `.env.example` documents every variable.
+**Local (Proton, macOS):** [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — pipx install, config in
+`~/Library/Application Support/JobRadarAgent/.env`, launchd schedule. `job-radar-agent doctor`
+preflights everything; `python scripts/run_local.py` does a no-changes dry run with a per-email report.
 
-**Cloud (multi-user):** one GHCR image; a k8s CronJob runs `scripts/run_cloud.py`. Per-user creds +
-BYOK keys are fetched in-cluster at run start (`/agent/cloud/*`). See `INTEGRATION_SPEC.md`.
+**Cloud (multi-user):** one GHCR image; a k8s CronJob runs `job-radar-agent cloud`. Per-user
+credentials and settings come from Job Radar in-cluster. See `INTEGRATION_SPEC.md` §2.1b and §3.6.
+
+More: `CLAUDE.md` (architecture + conventions), `INTEGRATION_SPEC.md` (contract with Job Radar),
+`SECURITY.md` (threat model).

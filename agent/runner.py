@@ -1,12 +1,11 @@
 """
-Top-level runner — one pass over the unread queue.
+Top-level runner — one pass over the unread Postings folder (V2).
 
-Orchestrates: acquire lock → fetch unread (newest-first, age/cap applied by the reader) → for each
-email, run the graph with per-email error isolation → report a run heartbeat. The graph performs its
-own single mutation (move_and_mark in finalize); the runner just drives the fan-out and tallies.
+Acquire lock → fetch unread (newest-first; age + count caps applied by the reader) → run the
+per-email graph with per-email error isolation → report a run record (ALWAYS, even on crash).
 
-Dry-run: wraps the reader+writer so NOTHING mutates — no moves, no staging writes — but classification
-still runs and the intended actions are tallied. Use it for the first live pass over a real mailbox.
+Dry-run wraps the reader, writer and duplicate store so NOTHING changes — no mail marked or moved, no
+Job Radar writes, no duplicate keys recorded — while the LLM pick + verification still run.
 """
 
 from __future__ import annotations
@@ -15,13 +14,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .dedup import DedupStore, NullDedupStore, ReadOnlyDedupStore
 from .graph import build_graph
-from .lock import LockHeld, run_lock
 from .llm import LLMClient
+from .lock import LockHeld, run_lock
 from .nodes import Nodes
 from .observability import email_trace, get_langfuse
 from .prompts import PromptProvider
 from .reader import EmailReaderClient
+from .senders import SenderPolicy
 from .state import Destination
 from .writer import JobRadarWriter
 
@@ -31,12 +32,12 @@ class RunResult:
     status: str = "success"                 # success | partial | failed
     emails_processed: int = 0
     postings_created: int = 0
-    interactions_recorded: int = 0
-    escalations: int = 0
-    retries: int = 0
+    duplicates_skipped: int = 0
+    escalations: int = 0                    # emails moved to Unprocessed
+    retries: int = 0                        # extra pick attempts beyond the first
     errors: list[str] = field(default_factory=list)
     skipped: bool = False                   # lock held
-    details: list[dict] = field(default_factory=list)   # per-email {message_id, category, outcome, destination}
+    details: list[dict] = field(default_factory=list)
 
     def as_run_record(self, environment: str, agent_version: str,
                       started_at: str, finished_at: str) -> dict[str, Any]:
@@ -44,45 +45,60 @@ class RunResult:
             "environment": environment, "agent_version": agent_version,
             "status": self.status, "started_at": started_at, "finished_at": finished_at,
             "emails_processed": self.emails_processed, "postings_created": self.postings_created,
-            "interactions_recorded": self.interactions_recorded,
+            "interactions_recorded": 0,     # V2 handles postings only (field kept for the contract)
             "escalations": self.escalations, "retries": self.retries,
             "error_summary": "; ".join(self.errors)[:2000] or None,
         }
 
 
+class _CachedReviews:
+    """Serves the reviews fetched once at run start (instead of one API call per email)."""
+
+    def __init__(self, inner: JobRadarWriter, reviews: list):
+        self._inner = inner
+        self._reviews = reviews
+
+    def get_reviews(self):
+        return list(self._reviews)
+
+    def create_inbox_entry(self, payload):
+        return self._inner.create_inbox_entry(payload)
+
+    def report_run(self, record):
+        return self._inner.report_run(record)
+
+
 class _NoMoveReader:
-    """Dry-run reader: reads for real, swallows moves (logs intent)."""
+    """Dry-run reader: reads for real, records intended changes instead of making them."""
 
     def __init__(self, inner: EmailReaderClient):
         self._inner = inner
-        self.intended_moves: list[tuple[str, str]] = []
+        self.intended: list[tuple[str, str]] = []
 
-    def get_unread(self):  # type: ignore[override]
+    def get_unread(self):
         return self._inner.get_unread()
+
+    def mark_read(self, message_id: str) -> None:
+        self.intended.append((message_id, "mark_read"))
 
     def move_and_mark(self, message_id: str, destination: Destination,
                       mark_read: bool = True) -> None:
-        self.intended_moves.append((message_id, destination))
+        self.intended.append((message_id, destination))
 
 
 class _NoWriteWriter:
-    """Dry-run writer: serves real reviews (for matching) but swallows all writes."""
+    """Dry-run writer: serves real reviews (for duplicate flags) but swallows all writes."""
 
     def __init__(self, inner: JobRadarWriter):
         self._inner = inner
-        self.intended: list[tuple[str, dict]] = []
+        self.intended: list[dict] = []
 
     def get_reviews(self):
         return self._inner.get_reviews()
 
     def create_inbox_entry(self, payload):
-        self.intended.append(("inbox", payload)); return {"inbox_email_id": "dry", "posting_ids": []}
-
-    def record_interaction(self, payload):
-        self.intended.append(("interaction", payload)); return {"interaction_id": "dry"}
-
-    def register_hitl(self, hitl_id, candidates):
-        self.intended.append(("hitl", {"hitl_id": hitl_id})); return {"ok": True}
+        self.intended.append(payload)
+        return {"inbox_email_id": "dry", "posting_ids": []}
 
     def report_run(self, record):
         return {"run_id": "dry"}
@@ -93,15 +109,17 @@ def run_once(
     reader: EmailReaderClient,
     writer: JobRadarWriter,
     llm: LLMClient,
-    critic_llm: LLMClient,
     prompts: PromptProvider,
+    policy: SenderPolicy | None = None,
+    dedup: DedupStore | None = None,
+    zero_postings_action: str = "mark_read",
     notifier=None,
     inbox_base_url: str | None = None,
     environment: str = "local",
-    agent_version: str = "0.1.0",
+    agent_version: str = "2.0.0",
     dry_run: bool = False,
     use_lock: bool = True,
-    lock_path: str = "/tmp/job-radar-agent.lock",
+    lock_path: str | None = None,
     spend_key: str = "local",
     daily_ceiling: float | None = None,
     spend_store=None,
@@ -109,33 +127,45 @@ def run_once(
     from notifications import dispatch as _dispatch
     from notifications.base import NullNotifier
     notifier = notifier or NullNotifier()
+    dedup = dedup or NullDedupStore()
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
     lf = get_langfuse()
 
     def _run_cost() -> float:
-        return getattr(llm, "run_cost", 0.0) + getattr(critic_llm, "run_cost", 0.0)
+        return getattr(llm, "run_cost", 0.0)
 
     def _go() -> RunResult:
         result = RunResult()
-        eff_reader = _NoMoveReader(reader) if dry_run else reader
-        eff_writer = _NoWriteWriter(writer) if dry_run else writer
-        nodes = Nodes(llm=llm, critic_llm=critic_llm, writer=eff_writer,
-                      reader=eff_reader, prompts=prompts)
+        # Preflight: one tracked-jobs fetch per run. If Job Radar refuses (agent disabled in the
+        # user's settings, revoked key, outage), stop BEFORE reading mail or paying for LLM calls.
+        try:
+            reviews = writer.get_reviews()
+        except Exception as exc:
+            result.status = "failed"
+            result.errors.append(f"Job Radar preflight failed — nothing processed: "
+                                 f"{type(exc).__name__}: {exc}")
+            return result
+        cached = _CachedReviews(writer, reviews)
+        nodes = Nodes(
+            llm=llm,
+            writer=_NoWriteWriter(cached) if dry_run else cached,
+            reader=_NoMoveReader(reader) if dry_run else reader,
+            prompts=prompts, policy=policy,
+            dedup=ReadOnlyDedupStore(dedup) if dry_run else dedup,
+            zero_postings_action=zero_postings_action,
+        )
         app = build_graph(nodes)
 
-        # H4 daily spend ceiling — refuse the run if already over, then enforce per-email.
-        # ceiling <= 0 means DISABLED (not "block everything") — avoids a misconfig silently
-        # skipping all processing.
+        # H4 daily spend ceiling — refuse the run if already over, then enforce per email.
+        # ceiling <= 0 means DISABLED (a misconfig must not silently skip everything).
         enforce_budget = bool(daily_ceiling and daily_ceiling > 0 and spend_store is not None)
         already = spend_store.spent_today(spend_key) if enforce_budget else 0.0
         if enforce_budget and already >= daily_ceiling:
             result.status = "partial"
             result.errors.append(f"daily spend ceiling reached (${already:.2f} ≥ ${daily_ceiling:.2f}) — skipped")
             return result
-        for c in (llm, critic_llm):
-            if hasattr(c, "reset_cost"):
-                c.reset_cost()
+        if hasattr(llm, "reset_cost"):
+            llm.reset_cost()
 
         for email in reader.get_unread():
             if enforce_budget and already + _run_cost() >= daily_ceiling:
@@ -145,45 +175,35 @@ def run_once(
             try:
                 with email_trace(lf, message_id=email.get("message_id", "?"),
                                  subject=email.get("subject", "")) as span:
-                    state = {"email": email, "attempts": 0, "langfuse_trace_id": span.trace_id}
-                    final = app.invoke(state)
-                    span.update(output={"outcome": final.get("outcome"),
-                                        "destination": final.get("destination"),
-                                        "category": (final.get("classification").category.value
-                                                     if final.get("classification") else None)})
+                    final = app.invoke({"email": email, "langfuse_trace_id": span.trace_id})
+                    span.update(output={
+                        "outcome": final.get("outcome"), "destination": final.get("destination"),
+                        "attempts": final.get("attempts", 0),
+                        "postings_written": final.get("postings_written", 0),
+                        "reason": final.get("reason"),
+                    })
             except Exception as exc:  # one poison email must not abort the whole run [L3]
+                # The email is left untouched (still unread) and is retried next run.
                 result.status = "partial"
-                result.errors.append(f'{email.get("message_id","?")}: {type(exc).__name__}: {exc}')
+                result.errors.append(f'{email.get("message_id", "?")}: {type(exc).__name__}: {exc}')
                 continue
+
             result.emails_processed += 1
-            result.retries += max(0, final.get("attempts", 1) - 1)
-            outcome = final.get("outcome")
-            if outcome == "needs_review":
+            result.retries += max(0, final.get("attempts", 0) - 1)
+            result.postings_created += final.get("postings_written", 0)
+            result.duplicates_skipped += final.get("duplicates_skipped", 0)
+            if final.get("destination") == "unprocessed":
                 result.escalations += 1
-            c = final.get("classification")
-            if c is not None:
-                result.postings_created += len(c.postings)
-                if c.interaction is not None and outcome == "processed":
-                    result.interactions_recorded += 1
             result.details.append({
                 "message_id": email.get("message_id"),
-                "subject": email.get("subject", "")[:60],
-                "category": c.category.value if c is not None else None,
-                "confidence": c.confidence if c is not None else None,
-                "outcome": outcome,
-                "destination": final.get("destination"),
+                "subject": (email.get("subject") or "")[:60],
+                "outcome": final.get("outcome"),
+                "postings": final.get("postings_written", 0),
+                "duplicates": final.get("duplicates_skipped", 0),
+                "attempts": final.get("attempts", 0),
+                "reason": final.get("reason"),
             })
-            # notifications (dry-run still notifies — it's read-only, not a mailbox mutation)
-            try:
-                if outcome == "awaiting_hitl" and c is not None and c.interaction is not None:
-                    _dispatch.hitl_prompt(notifier, company=c.interaction.company,
-                                          hitl_id=final.get("hitl_id", ""),
-                                          candidates=final.get("hitl_candidates", []))
-                else:
-                    _dispatch.per_email(notifier, email=email, final=final,
-                                        inbox_base_url=inbox_base_url)
-            except Exception as exc:
-                result.errors.append(f"notify failed for {email.get('message_id','?')}: {exc}")
+
         if enforce_budget and not dry_run:
             try:
                 spend_store.add(spend_key, _run_cost())
@@ -198,6 +218,9 @@ def run_once(
     result: RunResult | None = None
     try:
         if use_lock:
+            if lock_path is None:
+                from .paths import data_dir
+                lock_path = str(data_dir() / "agent.lock")
             with run_lock(lock_path):
                 result = _go()
         else:
@@ -207,10 +230,7 @@ def run_once(
     except Exception as exc:
         result = RunResult(status="failed", errors=[f"{type(exc).__name__}: {exc}"])
     finally:
-        # ALWAYS finalize so a run never dangles. Covers clean exceptions AND BaseException
-        # (SystemExit/KeyboardInterrupt, e.g. SIGTERM converted by run_cloud) — finally runs then the
-        # exception keeps propagating. A hard SIGKILL/OOM still can't be finalized here (→ job-radar
-        # should reap records with no finished_at past the run deadline).
+        # ALWAYS finalize so a run never dangles — including SIGTERM (SystemExit) mid-run.
         if result is None:
             result = RunResult(status="failed", errors=["interrupted before completion"])
         if not result.skipped and not dry_run:

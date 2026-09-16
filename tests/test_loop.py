@@ -7,13 +7,14 @@ from agent.loop import run_loop
 
 
 def _components():
-    return SimpleNamespace(reader=None, writer=None, llm=None, critic_llm=None,
-                           notifier=None, inbox_base_url="", close=lambda: None)
+    return SimpleNamespace(reader=None, writer=None, llm=None, policy=None, dedup=None,
+                           zero_postings_action="mark_read", notifier=None, inbox_base_url="",
+                           spend_store=None, daily_ceiling=0, close=lambda: None)
 
 
 def _result(**kw):
     base = dict(status="success", emails_processed=1, postings_created=2, escalations=0,
-                skipped=False)
+                duplicates_skipped=0, retries=0, skipped=False)
     base.update(kw)
     return SimpleNamespace(errors=[], **base)
 

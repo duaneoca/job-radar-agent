@@ -18,7 +18,9 @@ from typing import Any, Callable
 
 import httpx
 
-from .config import llm_from_config_bundle
+from .config import (llm_from_config_bundle, policy_from_config_bundle,
+                     zero_action_from_config_bundle)
+from .dedup import NullDedupStore
 from .reader import ProviderReader
 from .runner import run_once
 from .writer_rest import RestWriter
@@ -55,7 +57,9 @@ class _UserComponents:
     reader: Any
     writer: Any
     llm: Any
-    critic_llm: Any
+    policy: Any
+    dedup: Any
+    zero_postings_action: str
     user_notifier: Any                      # the user's own Slack (or Null if not connected)
     close: Callable[[], None]
 
@@ -72,31 +76,34 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
                           since_days: int | None, limit: int | None) -> _UserComponents:
     f = cfg["folders"]
     ec = cfg["email_credentials"]
+    root = f["root"]
+    # V2 reads ONE folder (Postings) and only ever moves mail to Unprocessed. Folder fields may be
+    # bare leaves or full paths — _full_label joins idempotently.
+    source = _full_label(root, f["postings"])
+    unprocessed = _full_label(root, f["unprocessed"])
+
     provider_kind = ec.get("provider", "gmail")
     if provider_kind == "gmail":
         from mcp_email.providers.gmail import GmailProvider
-        provider = GmailProvider(root_folder=f["root"], creds_info=ec)
+        provider = GmailProvider(root_folder=source, creds_info=ec)   # a move removes the source label
     elif provider_kind == "imap":
         from mcp_email.providers.imap import ImapProvider
         provider = ImapProvider(creds_info=ec)
     else:
         raise NotImplementedError(f"cloud provider '{provider_kind}' not supported yet")
 
-    root = f["root"]
-    reader = ProviderReader(
-        provider, root=root,
-        # sub-labels are full paths under root (Gmail) — join, mirroring the local Folders logic
-        dest_folders={k: _full_label(root, f[k])
-                      for k in ("interaction", "postings", "social", "unprocessed")},
-        since_days=since_days, limit=limit,
-    )
+    reader = ProviderReader(provider, source=source, dest_folders={"unprocessed": unprocessed},
+                            since_days=since_days, limit=limit)
     writer = RestWriter(base_url, internal_token=internal_token, user_id=user_id)
-    # BOTH classifier and critic use the per-user config (NOT make_critic_llm(), which reads local
-    # env defaults — that caused "Missing Anthropic API Key" for a Gemini user in the cloud).
-    llm = llm_from_config_bundle(cfg)
-    critic_llm = llm_from_config_bundle(cfg)
-    if llm is None or critic_llm is None:
+    llm = llm_from_config_bundle(cfg)          # the user's own provider/model/key
+    if llm is None:
         raise ValueError("no LLM key in config for user")
+    # Sender policy + zero-postings behavior come from the user's Email Agent settings in Job Radar.
+    policy = policy_from_config_bundle(cfg)
+    zero_action = zero_action_from_config_bundle(cfg)
+    # Pods are ephemeral, so duplicate suppression lives in Job Radar's database (unique
+    # (user_id, dedup_key)); every posting carries its dedup_key (INTEGRATION_SPEC §3.6).
+    dedup = NullDedupStore()
 
     # The user's own Slack (per-user) for user-facing pings; Null if they haven't connected one.
     slack = cfg.get("slack") or {}
@@ -114,8 +121,9 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
                 except Exception:
                     pass
 
-    return _UserComponents(reader=reader, writer=writer, llm=llm,
-                           critic_llm=critic_llm, user_notifier=user_notifier, close=_close)
+    return _UserComponents(reader=reader, writer=writer, llm=llm, policy=policy, dedup=dedup,
+                           zero_postings_action=zero_action, user_notifier=user_notifier,
+                           close=_close)
 
 
 def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token: str,
@@ -140,8 +148,9 @@ def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token
             per_user_notifier = NullNotifier() if dry_run else RoutingNotifier(comp.user_notifier, notifier)
             try:
                 res = run_once_fn(
-                    reader=comp.reader, writer=comp.writer, llm=comp.llm,
-                    critic_llm=comp.critic_llm, prompts=prompts, notifier=per_user_notifier,
+                    reader=comp.reader, writer=comp.writer, llm=comp.llm, prompts=prompts,
+                    policy=comp.policy, dedup=comp.dedup,
+                    zero_postings_action=comp.zero_postings_action, notifier=per_user_notifier,
                     environment="cloud", dry_run=dry_run, use_lock=False,
                     spend_key=uid, daily_ceiling=daily_ceiling, spend_store=spend_store,
                 )

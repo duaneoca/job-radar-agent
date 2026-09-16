@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "job-radar-agent"
-version = "0.1.0"
-description = "Agentic email pipeline (LangGraph + Langfuse + MCP) that classifies job-related email and writes results into Job Radar."
+version = "2.0.0"
+description = "Job-alert email agent: deterministic link extraction + one LLM pick + deterministic verification, writing postings into Job Radar."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -17,7 +17,7 @@ dependencies = [
     "httpx>=0.27.0",
     "litellm>=1.50.0",
     "langfuse>=2.50.0",
-    "mcp>=1.2.0",
+    "mcp>=1.2.0,<2",   # 2.x renamed FastMCP → MCPServer; migrate deliberately
     # Gmail provider (cloud / Gmail self-host)
     "google-auth>=2.35.0",
     "google-auth-oauthlib>=1.2.1",

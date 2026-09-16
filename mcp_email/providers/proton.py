@@ -60,6 +60,18 @@ def _best_text(msg: email.message.Message) -> tuple[str, bool]:
     return _choose_text(plain, html), has_attachments
 
 
+def _html_part(msg: email.message.Message) -> str:
+    """First non-attachment text/html part, decoded (raw HTML — only ever parsed, never rendered)."""
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        if "attachment" in str(part.get("Content-Disposition") or "").lower():
+            continue
+        if part.get_content_type() == "text/html":
+            return _payload(part)
+    return ""
+
+
 def _choose_text(plain: str | None, html: str | None) -> str:
     """Pick the body text that actually carries links.
 
@@ -215,6 +227,17 @@ class ProtonProvider(EmailProvider):
             return
         raise LookupError(f"message not found: {message_id}")
 
+    def mark_read(self, message_id: str) -> None:
+        conn = self._imap()
+        for folder in self.list_folders():
+            if conn.select(self._quote(folder))[0] != "OK":
+                continue
+            uid = self._find_uid(message_id)
+            if uid:
+                conn.uid("STORE", uid, "+FLAGS", "(\\Seen)")
+                return
+        raise LookupError(f"message not found: {message_id}")
+
     # ── helpers ───────────────────────────────────────────────
     @staticmethod
     def _quote(folder: str) -> str:
@@ -245,6 +268,10 @@ class ProtonProvider(EmailProvider):
                 received = parsedate_to_datetime(msg["Date"])
             except (TypeError, ValueError):
                 received = None
+            if received is not None and received.tzinfo is None:
+                # A Date header without a zone is naive; comparing it with zone-aware dates crashes
+                # the newest-first sort. Treat it as UTC.
+                received = received.replace(tzinfo=timezone.utc)
         return EmailMessage(
             message_id=(msg.get("Message-ID") or "").strip(),
             native_id=uid.decode() if isinstance(uid, bytes) else str(uid),
@@ -255,4 +282,6 @@ class ProtonProvider(EmailProvider):
             body_text=body,
             has_attachments=has_att,
             headers={k: _decode(v) for k, v in msg.items()},
+            body_html=_html_part(msg),
+            auth_results=[_decode(v) for v in (msg.get_all("Authentication-Results") or [])],
         )

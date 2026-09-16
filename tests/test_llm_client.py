@@ -9,7 +9,7 @@ import types
 import pytest
 
 from agent.llm_litellm import LiteLLMClient, _extract_json, _model_string
-from agent.schemas import Category, Classification
+from agent.schemas import LinkPicks, PickedPosting
 
 
 def test_model_string_all_four_vendors():
@@ -61,12 +61,12 @@ def _install_fake_litellm(content: str):
 
 
 def test_structured_parses_valid_json(monkeypatch):
-    payload = Classification(category=Category.job_alert, confidence=0.9, reasoning="ok").model_dump_json()
+    payload = LinkPicks(postings=[PickedPosting(link_id=3, title="FDE", company="Acme")]).model_dump_json()
     calls = _install_fake_litellm(f"```json\n{payload}\n```")
     client = LiteLLMClient("anthropic", "claude-sonnet-4-6", "sk-test")
-    out = client.structured(system="sys", user="usr", schema=Classification)
-    assert isinstance(out, Classification)
-    assert out.category == Category.job_alert
+    out = client.structured(system="sys", user="usr", schema=LinkPicks)
+    assert isinstance(out, LinkPicks)
+    assert out.postings[0].link_id == 3 and out.postings[0].company == "Acme"
     # routed to the right model, key passed per-call, schema instructions injected
     assert calls["model"] == "anthropic/claude-sonnet-4-6"
     assert calls["api_key"] == "sk-test"
@@ -78,7 +78,7 @@ def test_structured_raises_on_unparseable(monkeypatch):
     _install_fake_litellm("I'm sorry, I cannot do that.")
     client = LiteLLMClient("anthropic", "claude-sonnet-4-6", "sk-test")
     with pytest.raises(Exception):
-        client.structured(system="sys", user="usr", schema=Classification)
+        client.structured(system="sys", user="usr", schema=LinkPicks)
 
 
 def teardown_module(module):

@@ -30,18 +30,19 @@ def run() -> int:
             from mcp_email.providers.gmail import GmailProvider
             provider = GmailProvider(token_file=E.gmail_token_file,
                                      credentials_file=E.gmail_credentials_file,
-                                     root_folder=folders.root)
+                                     root_folder=folders.source)
         else:
             from mcp_email.providers.proton import ProtonProvider
             provider = ProtonProvider(E.proton_imap_host, E.proton_imap_port,
                                       E.proton_imap_user, E.proton_imap_password)
         all_folders = provider.list_folders()
         check("email provider login", True, f"{len(all_folders)} folders/labels")
-        for f in [folders.root, *folders.all_subfolders()]:
-            check(f"folder exists: {f}", f in all_folders, critical=(f == folders.root))
+        for f in folders.v2_folders():
+            check(f"folder exists: {f}", f in all_folders)
         try:
-            n = len(provider.get_unread(folders.root, since_days=E.max_email_age_days or None, limit=5))
-            check(f"unread in root (≤{E.max_email_age_days}d)", True, f"{n}+ found", critical=False)
+            n = len(provider.get_unread(folders.source, since_days=E.max_email_age_days or None, limit=5))
+            check(f"unread in {folders.source} (≤{E.max_email_age_days}d)", True, f"{n}+ found",
+                  critical=False)
         except Exception as exc:
             check("read unread", False, str(exc))
     except Exception as exc:
@@ -96,6 +97,24 @@ def run() -> int:
         except Exception as exc:
             check("Langfuse reachable + keys valid", False,
                   f"{A.langfuse_host}: {type(exc).__name__}: {exc}", critical=False)
+    # V2 policy (informational)
+    from .config import make_sender_policy, zero_postings_action
+    try:
+        pol = make_sender_policy()
+        doms = ", ".join(pol.allowed_domains) or "ANY sender (allow-list empty)"
+        check("sender allow-list", bool(pol.allowed_domains), doms, critical=False)
+        check("sender DMARC check", pol.require_auth,
+              "on (" + ", ".join(pol.trusted_authserv_ids) + ")" if pol.require_auth else "OFF",
+              critical=False)
+        check(f"zero-postings action: {zero_postings_action()}", True, critical=False)
+    except ValueError as exc:
+        check("V2 policy settings", False, str(exc))
+    if A.dedup_window_days > 0:
+        from .paths import data_dir
+        check(f"duplicate window {A.dedup_window_days}d", True,
+              str(data_dir() / "dedup.sqlite"), critical=False)
+    else:
+        check("duplicate suppression", False, "DEDUP_WINDOW_DAYS=0 (off)", critical=False)
     check(f"notifier ({A.notifier})", A.notifier != "null", critical=False)
     check(f"daily spend ceiling ${A.daily_spend_ceiling_usd}", A.daily_spend_ceiling_usd > 0,
           "0 = disabled", critical=False)
