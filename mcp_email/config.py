@@ -21,7 +21,7 @@ from agent.paths import env_file
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=env_file(), extra="ignore")
 
-    email_provider: str = "proton"           # proton | gmail
+    email_provider: str = "proton"           # proton | gmail | imap (e.g. Yahoo)
 
     # Folder layout (configurable names)
     email_root_folder: str = "hire-duane"
@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     proton_imap_port: int = 1143
     proton_imap_user: str = ""
     proton_imap_password: str = ""
+
+    # Generic IMAP over TLS (e.g. Yahoo: imap.mail.yahoo.com:993 + an app password)
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_user: str = ""
+    imap_password: str = ""
+    imap_use_ssl: bool = True
 
     # Gmail (API/OAuth)
     gmail_credentials_file: str = "credentials.json"
@@ -75,6 +82,11 @@ class Folders:
     def v2_folders(self) -> list[str]:
         """Folders V2 needs to exist."""
         return [self.source, self.unprocessed]
+
+    def sort_destinations(self) -> dict[str, str]:
+        """Logical destination → full folder path, for the sorter's reader over the root."""
+        return {"interaction": self.interaction, "postings": self.postings,
+                "social": self.social, "unprocessed": self.unprocessed}
 
     def all_subfolders(self) -> list[str]:
         return [self.interaction, self.postings, self.social, self.unprocessed]

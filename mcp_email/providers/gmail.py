@@ -33,10 +33,15 @@ def _b64(data: str | None) -> str:
 
 class GmailProvider(EmailProvider):
     def __init__(self, token_file: str = "token.json", credentials_file: str = "credentials.json",
-                 root_folder: str = "Hire Duane", creds_info: dict | None = None):
+                 root_folder: str = "Hire Duane", creds_info: dict | None = None,
+                 managed_folders: list[str] | None = None):
         self._token_file = token_file
         self._creds_file = credentials_file
         self._root = root_folder
+        # Labels a move takes the message OUT of (all managed folders except the destination). The
+        # sorter moves out of the root and the postings stage out of Postings, so one provider serving
+        # both must drop whichever managed label the message has. Default: just `root_folder`.
+        self._managed = list(managed_folders) if managed_folders else [root_folder]
         self._creds_info = creds_info   # cloud path: authorized-user dict from /agent/cloud/config
         self._svc = None
         self._label_ids: dict[str, str] | None = None   # name → id
@@ -111,7 +116,9 @@ class GmailProvider(EmailProvider):
         ids = [m["id"] for m in resp.get("messages", [])]
         if not ids:
             raise LookupError(f"message not found: {message_id}")
-        remove = [self._label_id(self._root)] + (["UNREAD"] if mark_read else [])
+        labels = self._labels()
+        remove = [labels[n] for n in self._managed if n != dest_folder and n in labels]
+        remove += ["UNREAD"] if mark_read else []
         svc.users().messages().modify(userId="me", id=ids[0], body={
             "addLabelIds": [self._label_id(dest_folder)],
             "removeLabelIds": remove,

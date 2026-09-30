@@ -39,7 +39,9 @@ class AgentSettings(BaseSettings):
     # and be retried rather than burn the whole window × retries.
     llm_timeout_seconds: float = 25.0
 
-    # Sorter — Jev decision model (TypeSafe). SYSTEM-WIDE key, not BYOK.
+    # Sorter — Jev decision model (TypeSafe). SYSTEM-WIDE key, not BYOK. When enabled, each run first
+    # sorts unread root-folder mail into Interaction / Postings / Social / Unprocessed.
+    sorter_enabled: bool = False
     typesafe_api_key: str = ""
     jev_model: str = "jev-latest"
     # Route only a confident, clear winner; everything else → Unprocessed. Tune with
@@ -105,6 +107,23 @@ def make_jev(settings: AgentSettings = settings):
 
 def bulk_recruiter_domains(settings: AgentSettings = settings) -> tuple[str, ...]:
     return split_list(settings.bulk_recruiter_domains)
+
+
+def sort_config(settings: AgentSettings = settings):
+    from .sort_stage import SortConfig
+    return SortConfig(min_confidence=settings.sorter_min_confidence,
+                      min_margin=settings.sorter_min_margin,
+                      bulk_domains=bulk_recruiter_domains(settings))
+
+
+def make_sort_stage(reader, settings: AgentSettings = settings):
+    """The sort stage over `reader` (the ROOT folder), or None when the sorter is disabled."""
+    if not settings.sorter_enabled:
+        return None
+    if not settings.typesafe_api_key:
+        raise SystemExit("✗ SORTER_ENABLED=true but TYPESAFE_API_KEY is not set")
+    from .sort_stage import SortStage
+    return SortStage(reader, make_jev(settings), sort_config(settings))
 
 
 def make_sender_policy(settings: AgentSettings = settings) -> SenderPolicy:

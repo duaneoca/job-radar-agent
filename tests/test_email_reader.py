@@ -362,3 +362,58 @@ def test_get_recent_is_readonly_and_includes_read_mail():
     assert all("BODY.PEEK[]" in " ".join(map(str, a)) for c, a in fake.commands if c == "FETCH")
     assert not [c for c, _ in fake.commands if c in ("STORE", "MOVE", "COPY", "EXPUNGE")]
     assert len(msgs) == 1
+
+
+# ── Gmail move = label swap over the MANAGED labels (sorter moves out of root, V2 out of Postings) ──
+
+class _FakeGmail:
+    def __init__(self):
+        self.modified = []
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self
+
+    def labels(self):
+        return self
+
+    def list(self, **kw):
+        if kw.get("q", "").startswith("rfc822msgid:"):
+            return self._exec({"messages": [{"id": "g1"}]})
+        return self._exec({"labels": [{"name": n, "id": n.upper()} for n in
+                                      ("R", "R/Interaction", "R/Postings", "R/Social", "R/Unprocessed")]})
+
+    def modify(self, userId, id, body):
+        self.modified.append(body)
+        return self._exec({})
+
+    @staticmethod
+    def _exec(result):
+        class _E:
+            def execute(self_inner):
+                return result
+        return _E()
+
+
+def _gmail(managed=None):
+    from mcp_email.providers.gmail import GmailProvider
+    p = GmailProvider(root_folder="R/Postings", creds_info={}, managed_folders=managed)
+    p._svc = _FakeGmail()
+    return p
+
+
+def test_gmail_move_removes_every_managed_label_but_the_destination():
+    p = _gmail(["R", "R/Interaction", "R/Postings", "R/Social", "R/Unprocessed"])
+    p.move_and_mark("<m>", "R/Interaction", mark_read=False)
+    (body,) = p._svc.modified
+    assert body["addLabelIds"] == ["R/INTERACTION"]
+    assert set(body["removeLabelIds"]) == {"R", "R/POSTINGS", "R/SOCIAL", "R/UNPROCESSED"}
+
+
+def test_gmail_move_default_removes_only_root_folder_and_marks_read():
+    p = _gmail()
+    p.move_and_mark("<m>", "R/Unprocessed")
+    (body,) = p._svc.modified
+    assert body["removeLabelIds"] == ["R/POSTINGS", "UNREAD"]

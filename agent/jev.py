@@ -71,6 +71,11 @@ class JevClient:
         self.input_tokens = 0
         self.calls = 0
 
+    def reset_cost(self) -> None:
+        self.run_cost = 0.0
+        self.input_tokens = 0
+        self.calls = 0
+
     def ask(self, state: str | dict, questions: dict[str, dict]) -> dict:
         """Raw answers keyed by question name. Raises JevError on failure."""
         body = {"model": self._model, "state": state, "questions": questions}
