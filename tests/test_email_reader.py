@@ -337,3 +337,28 @@ def test_date_without_timezone_does_not_break_newest_first_sort():
             self._msgs[first] = self._msgs[first].replace(b" +0000", b"")   # naive Date header
     msgs = _provider_with_fake(_MixedTZ()).get_unread("Folders/Hire Duane", since_days=14)
     assert len(msgs) == 3 and all(m.received_at.tzinfo is not None for m in msgs)
+
+
+# ── get_recent (offline eval only): EXAMINE + PEEK, never a flag change ──
+
+class _ExamineFakeIMAP(_FakeIMAP):
+    def __init__(self):
+        super().__init__()
+        self.selects = []
+
+    def select(self, folder, readonly=False):
+        self.selects.append((folder, readonly))
+        return "OK", [b"2"]
+
+
+def test_get_recent_is_readonly_and_includes_read_mail():
+    fake = _ExamineFakeIMAP()
+    p = _provider_with_fake(fake)
+    msgs = p.get_recent("Folders/Hire Duane/Social", 1)
+    assert fake.selects == [('"Folders/Hire Duane/Social"', True)], "must EXAMINE (readonly)"
+    searches = [a for c, a in fake.commands if c == "SEARCH"]
+    assert searches == [(None, "ALL")], "must include read mail (no UNSEEN)"
+    assert [a[0] for c, a in fake.commands if c == "FETCH"] == [b"2"], "newest UID only"
+    assert all("BODY.PEEK[]" in " ".join(map(str, a)) for c, a in fake.commands if c == "FETCH")
+    assert not [c for c, _ in fake.commands if c in ("STORE", "MOVE", "COPY", "EXPUNGE")]
+    assert len(msgs) == 1

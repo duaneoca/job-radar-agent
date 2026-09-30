@@ -18,7 +18,7 @@ from .llm_litellm import LiteLLMClient
 from .nodes import ZERO_POSTINGS_ACTIONS
 from .observability import get_langfuse
 from .paths import env_file
-from .senders import DEFAULT_ALLOWED_DOMAINS, DEFAULT_TRUSTED_AUTHSERV_IDS, SenderPolicy
+from .senders import DEFAULT_ALLOWED_DOMAINS, split_list, DEFAULT_TRUSTED_AUTHSERV_IDS, SenderPolicy
 
 
 class AgentSettings(BaseSettings):
@@ -38,6 +38,16 @@ class AgentSettings(BaseSettings):
     # Per-call timeout (s). A fast model answers in a few seconds; a stalled call should fail fast
     # and be retried rather than burn the whole window × retries.
     llm_timeout_seconds: float = 25.0
+
+    # Sorter — Jev decision model (TypeSafe). SYSTEM-WIDE key, not BYOK.
+    typesafe_api_key: str = ""
+    jev_model: str = "jev-latest"
+    # Route only a confident, clear winner; everything else → Unprocessed. Tune with
+    # scripts/eval_sorter.py against your already-sorted folders.
+    sorter_min_confidence: float = 0.85
+    sorter_min_margin: float = 0.30
+    # Recruiter mail from these sender domains is a bulk mailing → Postings (never a personal note).
+    bulk_recruiter_domains: str = "user.dice.com"
 
     # Sender policy (checked before any LLM call). Comma-separated; an EMPTY value allows all senders.
     allowed_sender_domains: str = ",".join(DEFAULT_ALLOWED_DOMAINS)
@@ -85,6 +95,16 @@ def make_llm(settings: AgentSettings = settings) -> LLMClient:
     """The link-picker LLM from local env (BYOK), Langfuse-traced when configured."""
     return LiteLLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key,
                          langfuse=get_langfuse(), timeout=settings.llm_timeout_seconds)
+
+
+def make_jev(settings: AgentSettings = settings):
+    """The sorter's Jev client (one system-wide TypeSafe key)."""
+    from .jev import JevClient
+    return JevClient(settings.typesafe_api_key, model=settings.jev_model)
+
+
+def bulk_recruiter_domains(settings: AgentSettings = settings) -> tuple[str, ...]:
+    return split_list(settings.bulk_recruiter_domains)
 
 
 def make_sender_policy(settings: AgentSettings = settings) -> SenderPolicy:

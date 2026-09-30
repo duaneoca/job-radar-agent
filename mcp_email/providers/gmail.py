@@ -90,6 +90,12 @@ class GmailProvider(EmailProvider):
         msgs = [self._fetch(mid, folder) for mid in ids]
         return [m for m in msgs if m is not None]
 
+    def get_recent(self, folder: str, limit: int) -> list[EmailMessage]:
+        resp = self._service().users().messages().list(
+            userId="me", labelIds=[self._label_id(folder)], maxResults=limit).execute()
+        msgs = [self._fetch(m["id"], folder) for m in resp.get("messages", [])]
+        return [m for m in msgs if m is not None]
+
     def get_email(self, message_id: str) -> EmailMessage | None:
         svc = self._service()
         resp = svc.users().messages().list(

@@ -58,6 +58,14 @@ class EmailProvider(ABC):
         `limit` — cap the number returned (newest-first), e.g. MAX_EMAILS_PER_RUN. None ⇒ no cap.
         """
 
+    def get_recent(self, folder: str, limit: int) -> list[EmailMessage]:
+        """
+        The `limit` most recent messages in `folder`, READ OR UNREAD, newest-first. Read-only and
+        offline-evaluation only (scripts/eval_sorter.py samples already-sorted folders as ground
+        truth); the agent's runtime path never calls it. Must not change any flag.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def get_email(self, message_id: str) -> EmailMessage | None:
         """Fetch one message by its RFC 822 Message-ID. None if not found."""
