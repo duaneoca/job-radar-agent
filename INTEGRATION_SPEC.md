@@ -504,7 +504,7 @@ only moved. `/agent/inbox` idempotency on `(user_id, message_id)` makes write-th
 | Sorter category | Folder | Mailbox | `inbox_emails.category` |
 |---|---|---|---|
 | `recruiter_outreach` | Interaction | stays unread | `recruiter_outreach` + §3.5 card (see relay rule) |
-| `recruiter_outreach` from a bulk channel (`BULK_RECRUITER_DOMAINS`, default `user.dice.com`) | Postings | stays unread | — (the §3.6 link picker handles it) |
+| `recruiter_outreach` from a bulk channel (`BULK_RECRUITER_DOMAINS`, none by default) | Postings | stays unread | — (the §3.6 link picker handles it) |
 | `application_update` | Interaction | stays unread | `application_confirmation` |
 | `connection_request`, `direct_message` | Interaction | stays unread | `network_notification` |
 | `job_alert` | Postings | stays unread (so §3.6 picks it up this run) | — |
@@ -524,10 +524,13 @@ it names the role, not the sender); `is_agency` = Jev yes/no (≥ 0.75 / ≤ 0.2
 and typed `recruiter` (§3.5 phases).
 
 **Relay rule:** `/recruiters/suggestions` keys a recruiter by the card's email, else the sender
-address. A relay sender (e.g. `inmail-hit-reply@linkedin.com`) with no real address in the card would
+address. A SHARED relay sender (e.g. `inmail-hit-reply@linkedin.com`) with no real address in the card would
 merge every such recruiter into one suggestion, so the agent files that mail as `network_notification`
 (the card is still stored). *Open for job-radar:* skip relay/no-reply senders in suggestions (or key
-them by name + linkedin_url); the agent can then send `recruiter_outreach` for them.
+them by name + linkedin_url); the agent can then send `recruiter_outreach` for them. Dice's relay
+(`…@user.dice.com`) is per recruiter (replies reach them), so it is a usable key: the card takes the
+signature's address when present, else the relay address, and the mail stays `recruiter_outreach`.
+Dice job alerts ("IntelliSearch") are job alerts → Postings.
 
 **Robustness:** a move that cannot find the message (`LookupError`, e.g. a stale Proton Bridge view
 after the human already moved it) counts as `gone`, not an error. Jev 429/529/5xx retry with backoff,

@@ -8,8 +8,8 @@ Routing is by FOLDER, not category: several categories share Interaction, so the
 folder's categories are summed before the confidence/margin check (a 50/50 recruiter-vs-connection split
 is still a confident Interaction).
 
-Bulk recruiter channels (e.g. Dice's user.dice.com relay) are decided by SENDER, not by Jev: the channel
-is in the header, not the text, and templated agency mail sent directly reads the same. Only a
+Bulk recruiter channels (BULK_RECRUITER_DOMAINS, none by default) are decided by SENDER, not by Jev:
+the channel is in the header, not the text, and templated agency mail sent directly reads the same. Only a
 `recruiter_outreach` from a listed channel is redirected to Postings, so a personal email from anyone
 else can never be turned into a posting by this rule.
 
@@ -48,8 +48,9 @@ CATEGORY_FOLDER = {
     "other": "unprocessed",
 }
 
-# Sender channels whose recruiter mail is always a bulk mailing → Postings (configurable).
-DEFAULT_BULK_RECRUITER_DOMAINS = ("user.dice.com",)
+# Sender channels whose recruiter mail is always a bulk mailing → Postings (configurable; none by
+# default — e.g. Dice's user.dice.com relay carries real recruiter conversations → Interaction).
+DEFAULT_BULK_RECRUITER_DOMAINS: tuple[str, ...] = ()
 
 # Destinations whose mail stays unread after the move.
 KEEP_UNREAD = {"interaction", "postings"}
@@ -71,7 +72,7 @@ CATEGORY_QUESTION = choice(
                               "meeting invitations, next round, offer, or rejection.",
         "job_alert": "An automated alert or digest listing one or more job postings, including "
                      "single-job match emails from job boards (e.g. Indeed 'match' emails naming "
-                     "one role), and updates from an AI job agent or job-search service that "
+                     "one role), saved-search alerts (e.g. Dice 'IntelliSearch' alerts), and updates from an AI job agent or job-search service that "
                      "present new roles (e.g. a weekly check-in listing new openings).",
         "network_social": "Non-actionable noise: social-network activity (profile views, post "
                           "impressions, 'people you may know' suggestions, someone shared a post), "

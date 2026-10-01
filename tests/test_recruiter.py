@@ -125,3 +125,12 @@ def test_pick_that_repeats_the_subject_is_the_role_not_the_sender():
     card = build_card(jev, {"sender": "Sarah <s@amazon.com>", "body_text": body,
                             "subject": "Solve the hardest cloud problems | Senior SA, AWS Industries"})
     assert card["title"] == "GTM Recruiter" and "employer" not in card
+
+
+def test_dice_relay_prefers_signature_address_else_keeps_the_relay():
+    jev = FakeJev()
+    sig = build_card(jev, _email(sender='"Kajal Saini" <3fc-mcp@user.dice.com>',
+                                 body="Hi\nKajal Saini\nkajal@agency.com"))
+    assert sig["email"] == "kajal@agency.com"
+    relay = build_card(jev, _email(sender='"Kajal Saini" <3fc-mcp@user.dice.com>', body="Hi\nKajal"))
+    assert relay["email"] == "3fc-mcp@user.dice.com"

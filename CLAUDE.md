@@ -51,8 +51,8 @@ tests/              synthetic samples only (tests/samples.py) — real emails ar
 ```
 unread in ROOT → Jev category → folder-summed prob ≥ min & margin ok? ─ no → Unprocessed (read)
    ├─ interaction  → POST /agent/inbox (no postings; card if recruiter_outreach) → move (unread)
-   ├─ postings     → move (unread — the link picker below takes it this run); bulk-recruiter
-   │                 senders (user.dice.com) land here by SENDER rule, never by Jev
+   ├─ postings     → move (unread — the link picker below takes it this run); optional
+   │                 BULK_RECRUITER_DOMAINS land here by SENDER rule, never by Jev
    └─ social       → move (read)
 ```
 

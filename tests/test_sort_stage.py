@@ -61,7 +61,7 @@ TABLE = {"recruiter": ("recruiter_outreach", 0.97), "update": ("application_upda
 
 EMAILS = [_email("<r>", "recruiter"), _email("<u>", "update"), _email("<a>", "alert"),
           _email("<s>", "social"), _email("<q>", "unsure"),
-          _email("<d>", "dice", sender='"Dice Recruiter" <x-y@user.dice.com>')]
+          _email("<d>", "dice", sender='"Kajal Saini" <x-y@user.dice.com>')]
 
 
 def _stage(emails=EMAILS, missing=()):
@@ -75,16 +75,27 @@ def test_routes_writes_interaction_and_moves_once_each():
     res = stage.run(w)
     assert reader.moves == [("<r>", "interaction", False), ("<u>", "interaction", False),
                             ("<a>", "postings", False), ("<s>", "social", True),
-                            ("<q>", "unprocessed", True), ("<d>", "postings", False)]
-    assert dict(res.moved) == {"interaction": 2, "postings": 2, "social": 1, "unprocessed": 1}
+                            ("<q>", "unprocessed", True), ("<d>", "interaction", False)]
+    assert dict(res.moved) == {"interaction": 3, "postings": 1, "social": 1, "unprocessed": 1}
     # only Interaction mail is written; postings are left to the link-picker stage
-    assert [p["message_id"] for p in w.inbox_entries] == ["<r>", "<u>"]
-    r, u = w.inbox_entries
+    assert [p["message_id"] for p in w.inbox_entries] == ["<r>", "<u>", "<d>"]
+    r, u, d = w.inbox_entries
     assert r["category"] == "recruiter_outreach" and r["postings"] == []
     assert r["raw_extracted_json"]["recruiter_contact"]["email"] == "pat@examplestaffing.com"
     assert r["recruiter"] == r["raw_extracted_json"]["recruiter_contact"]
     assert u["category"] == "application_confirmation" and "recruiter_contact" not in u["raw_extracted_json"]
-    assert res.inbox_written == 2 and res.recruiter_cards == 1 and not res.errors
+    # Dice's per-recruiter relay is a real recruiter conversation → a suggestion keyed by that address
+    assert d["category"] == "recruiter_outreach"
+    assert d["raw_extracted_json"]["recruiter_contact"]["email"] == "x-y@user.dice.com"
+    assert res.inbox_written == 3 and res.recruiter_cards == 1 + 0 + 1 and not res.errors
+
+
+def test_configured_bulk_channel_goes_to_postings():
+    reader = RootReader([_email("<d>", "dice", sender='"Dice Recruiter" <x-y@user.dice.com>')])
+    stage = SortStage(reader, FakeJev(TABLE), SortConfig(bulk_domains=("user.dice.com",)))
+    w = FakeWriter()
+    stage.run(w)
+    assert reader.moves == [("<d>", "postings", False)] and w.inbox_entries == []
 
 
 def test_relay_recruiter_without_real_address_is_not_a_recruiter_suggestion():
@@ -102,7 +113,7 @@ def test_dry_run_neither_writes_nor_moves():
     w = FakeWriter()
     res = stage.run(w, dry_run=True)
     assert reader.moves == [] and w.inbox_entries == []
-    assert res.moved["interaction"] == 2 and len(res.details) == 6
+    assert res.moved["interaction"] == 3 and len(res.details) == 6
 
 
 def test_already_moved_message_counts_as_gone_not_error():
@@ -147,10 +158,10 @@ def _run(stage, **kw):
 def test_run_once_sorts_first_and_reports_counts():
     stage, _ = _stage()
     res, w = _run(stage)
-    assert res.status == "success" and res.sorted["interaction"] == 2
-    assert res.escalations == 1 and res.interactions_recorded == 2
+    assert res.status == "success" and res.sorted["interaction"] == 3
+    assert res.escalations == 1 and res.interactions_recorded == 3
     (record,) = w.runs
-    assert record["interactions_recorded"] == 2 and record["escalations"] == 1
+    assert record["interactions_recorded"] == 3 and record["escalations"] == 1
 
 
 def test_run_once_charges_jev_against_the_daily_ceiling():
@@ -173,4 +184,4 @@ def test_run_once_dry_run_sorts_nothing_for_real():
     stage, reader = _stage()
     res, w = _run(stage, dry_run=True)
     assert reader.moves == [] and w.inbox_entries == [] and w.runs == []
-    assert res.sorted["postings"] == 2
+    assert res.sorted["postings"] == 1

@@ -49,7 +49,9 @@ class AgentSettings(BaseSettings):
     sorter_min_confidence: float = 0.85
     sorter_min_margin: float = 0.30
     # Recruiter mail from these sender domains is a bulk mailing → Postings (never a personal note).
-    bulk_recruiter_domains: str = "user.dice.com"
+    # Empty by default: Dice recruiter mail is real outreach (Interaction); Dice job alerts
+    # (IntelliSearch) are recognised by Jev as job alerts.
+    bulk_recruiter_domains: str = ""
 
     # Sender policy (checked before any LLM call). Comma-separated; an EMPTY value allows all senders.
     allowed_sender_domains: str = ",".join(DEFAULT_ALLOWED_DOMAINS)

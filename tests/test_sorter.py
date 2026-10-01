@@ -11,8 +11,8 @@ def _ans(cat, conf=0.95, probs=None):
     return ChoiceAnswer(cat, conf, probs or {cat: 0.95, "other": 0.05})
 
 
-def _decide(a, sender="someone@example.com"):
-    return decide(a, sender, min_confidence=0.85, min_margin=0.3)
+def _decide(a, sender="someone@example.com", bulk=("user.dice.com",)):
+    return decide(a, sender, min_confidence=0.85, min_margin=0.3, bulk_domains=bulk)
 
 
 @pytest.mark.parametrize("cat,folder,mark_read", [
@@ -79,6 +79,11 @@ def test_bulk_rule_does_not_bypass_low_confidence():
     d = _decide(_ans("recruiter_outreach", 0.5, {"recruiter_outreach": 0.5, "job_alert": 0.5}),
                 "x <a@user.dice.com>")
     assert d.folder == "unprocessed"
+
+
+def test_no_bulk_channels_by_default():
+    d = decide(_ans("recruiter_outreach"), "x <a@user.dice.com>", min_confidence=0.85, min_margin=0.3)
+    assert d.folder == "interaction" and d.rule == ""
 
 
 def test_sender_domain_parses_display_names():

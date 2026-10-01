@@ -5,8 +5,10 @@ V1 had an LLM write the card. Jev cannot write text, so the card is built the V2
 copied from the email, never generated:
 
   name          From display name, with relay/ID decorations removed ("(via LinkedIn)", "(#TSI2917)")
-  email         the sender address — omitted for relay senders (LinkedIn InMail, Dice), where it is
-                not the recruiter's own; then the first address in the signature, if any
+  email         the sender address — except for SHARED relay senders (LinkedIn InMail, …), where it is
+                not the recruiter's own: then the first address in the signature, if any. Dice's
+                per-recruiter relay (user.dice.com) reaches that one recruiter, so it is kept as a
+                fallback, but a signature address is preferred.
   phone         first phone-looking run in the signature, verbatim
   linkedin_url  first linkedin.com/in/… URL in the body
   title/employer  Jev PICKS one of our numbered signature fragments (or "none"); we copy the fragment
@@ -26,8 +28,11 @@ from email.utils import parseaddr
 from .jev import JevError, choice, noul
 from .sorter import _REPLY_MARKERS, _on_domain, sender_domain
 
-# Sender domains that relay mail on someone's behalf — their address is not the recruiter's.
-RELAY_DOMAINS = ("linkedin.com", "dice.com", "indeed.com", "glassdoor.com", "ziprecruiter.com")
+# Sender domains that relay mail through ONE shared address — it is not the recruiter's, and it would
+# merge every such recruiter into one Job Radar suggestion.
+RELAY_DOMAINS = ("linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com")
+# Relays with a distinct address per recruiter (replies reach them) — usable, but prefer the signature's.
+PER_SENDER_RELAYS = ("user.dice.com",)
 FREE_MAIL = ("gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "aol.com", "icloud.com",
              "proton.me", "protonmail.com")
 
@@ -119,13 +124,15 @@ def build_card(jev, email: dict) -> dict | None:
 
     card: dict = {"name": _cap("name", name)}
     addr = parseaddr(sender)[1]
-    if addr and not _on_domain(domain, RELAY_DOMAINS):
+    relays = RELAY_DOMAINS + PER_SENDER_RELAYS
+    sig_emails = [e for e in _EMAIL.findall(sig)
+                  if not _on_domain(e.split("@")[1].lower(), relays)]
+    if addr and not _on_domain(domain, relays):
         card["email"] = _cap("email", addr)
-    else:
-        sig_emails = [e for e in _EMAIL.findall(sig) if not _on_domain(e.split("@")[1].lower(),
-                                                                          RELAY_DOMAINS)]
-        if sig_emails:
-            card["email"] = _cap("email", sig_emails[0])
+    elif sig_emails:
+        card["email"] = _cap("email", sig_emails[0])
+    elif addr and _on_domain(domain, PER_SENDER_RELAYS):
+        card["email"] = _cap("email", addr)
     if (m := _PHONE.search(sig)):
         card["phone"] = _cap("phone", m.group(0))
     if (m := _LINKEDIN.search(body)):

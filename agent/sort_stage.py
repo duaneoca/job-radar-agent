@@ -20,7 +20,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .recruiter import RELAY_DOMAINS, build_card
+from .recruiter import RELAY_DOMAINS, build_card   # shared relays only (see recruiter.py)
 from .sorter import (DEFAULT_BULK_RECRUITER_DOMAINS, SortDecision, _on_domain, classify, decide,
                      sender_domain)
 
