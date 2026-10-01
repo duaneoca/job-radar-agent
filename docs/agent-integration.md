@@ -32,7 +32,21 @@ Any change to tables, endpoints, payloads, or auth is a PR against that file fir
   authentication, zero-postings action) and return it as `email_policy` in `/agent/cloud/config`.
 - **Phase B:** partial unique index `(user_id, dedup_key)`; skip conflicting postings on insert
   instead of rejecting the email. Until then, cloud users get no cross-email duplicate suppression.
-- V2 no longer calls `/agent/interactions` or sends recruiter cards; keep those endpoints for now.
+- V2's link picker does not call `/agent/interactions`; keep that endpoint for now.
+
+## Agent sorter work items (spec §3.7)
+The optional sorter (Jev decision model) files root-folder mail and writes **Interaction** mail to
+`POST /agent/inbox` with **no postings** (categories `recruiter_outreach`, `application_confirmation`,
+`network_notification`), plus a §3.5 recruiter card for recruiter outreach. Works with today's API.
+- **Inbox:** zero-posting rows already render ("No postings or status updates extracted"); consider
+  showing the recruiter card on the row, and hiding the "import" hint when there are no postings.
+- **Recruiter suggestions (recommended):** `/recruiters/suggestions` keys by card email, else sender.
+  Skip shared relay / no-reply senders (`*@linkedin.com`, `*@indeed.com`, `noreply`/`no-reply`) or key
+  them by name + `linkedin_url`. Until then the agent files LinkedIn InMail recruiters as
+  `network_notification` so they don't merge into one suggestion.
+- **Typed `recruiter` field** on `AgentInboxIn` (§3.5 Phase 2) — the agent already sends it.
+- **Cloud folders:** the sorter uses all five `folders` keys from `/agent/cloud/config`; make sure the
+  Email Agent settings page lets users name Interaction and Social too.
 
 ## Non-negotiable security obligations on job-radar (see spec §5)
 - `[C2]` URL scheme allowlist + output sanitization for all agent-derived fields (stored-XSS → account takeover).
