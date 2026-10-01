@@ -11,8 +11,8 @@ import os
 from dataclasses import dataclass
 from typing import Callable
 
-from .config import (make_dedup_store, make_llm, make_notifier, make_sender_policy,
-                     make_sort_stage, zero_postings_action)
+from .config import (make_dedup_store, make_llm, make_notifier, make_retention_policy,
+                     make_sender_policy, make_sort_stage, zero_postings_action)
 from .config import settings as agent_settings
 from .reader import ProviderReader
 from .writer_rest import RestWriter
@@ -34,6 +34,7 @@ class Components:
     inbox_base_url: str
     close: Callable[[], None]
     sort_stage: object = None     # SortStage over the root folder, when SORTER_ENABLED
+    retention_stage: object = None  # RetentionStage (expired Social/Postings → Trash), when configured
 
 
 def _build_provider():
@@ -64,11 +65,13 @@ def build_components() -> Components:
     # the provider in-process. Both expose the same EmailReaderClient interface.
     since = email_settings.max_email_age_days if email_settings.max_email_age_days > 0 else None
     sort_stage = None
+    retention_stage = None
+    retention = make_retention_policy()
     if os.environ.get("EMAIL_READER_TRANSPORT", "direct").lower() == "mcp":
         from .reader_mcp import McpReaderClient
         reader: object = McpReaderClient()
-        if agent_settings.sorter_enabled:
-            raise SystemExit("✗ the sorter needs EMAIL_READER_TRANSPORT=direct")
+        if agent_settings.sorter_enabled or retention.enabled:
+            raise SystemExit("✗ the sorter and retention need EMAIL_READER_TRANSPORT=direct")
     else:
         provider = _build_provider()
         reader = ProviderReader(
@@ -80,6 +83,10 @@ def build_components() -> Components:
         sort_stage = make_sort_stage(ProviderReader(
             provider, source=folders.root, dest_folders=folders.sort_destinations(),
             since_days=since, limit=email_settings.max_emails_per_run))
+        if retention.enabled:
+            from .retention import RetentionStage
+            retention_stage = RetentionStage(
+                provider, {"social": folders.social, "postings": folders.postings}, retention)
     writer = RestWriter(agent_settings.jobradar_api_url, agent_settings.agent_api_key)
     dedup = make_dedup_store()
     notifier = make_notifier()
@@ -98,5 +105,5 @@ def build_components() -> Components:
         zero_postings_action=zero_postings_action(), notifier=notifier,
         spend_store=DailySpendStore(), daily_ceiling=agent_settings.daily_spend_ceiling_usd,
         inbox_base_url=agent_settings.jobradar_api_url.replace("/api", ""), close=_close,
-        sort_stage=sort_stage,
+        sort_stage=sort_stage, retention_stage=retention_stage,
     )

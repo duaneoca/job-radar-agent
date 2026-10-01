@@ -2,8 +2,8 @@
 Local end-to-end runner with a readable per-email report (the CLI `run --once` prints a summary only).
 
 DRY-RUN by default: sorts the root folder (when SORTER_ENABLED), extracts links, calls the LLM,
-verifies, and prints what WOULD happen — but marks nothing, moves nothing, writes nothing, and records
-no duplicate keys. Pass --commit to act.
+verifies, counts what retention WOULD move to Trash, and prints what WOULD happen — but marks nothing,
+moves nothing, trashes nothing, writes nothing, and records no duplicate keys. Pass --commit to act.
 
 In a dry run the sorter's decisions are only reported, so mail it would file into Postings is not yet
 there for the postings stage to see.
@@ -39,6 +39,7 @@ def main(argv) -> int:
             notifier=c.notifier, inbox_base_url=c.inbox_base_url, environment="local",
             dry_run=not commit, spend_key="local", daily_ceiling=c.daily_ceiling,
             spend_store=c.spend_store, sort_stage=c.sort_stage,
+            retention_stage=c.retention_stage,
         )
     finally:
         c.close()
@@ -64,6 +65,10 @@ def main(argv) -> int:
           f"unprocessed={res.escalations} retries={res.retries} "
           f"llm_cost=${getattr(c.llm, 'run_cost', 0.0):.4f}"
           + (f" jev_cost=${c.sort_stage.jev.run_cost:.5f}" if c.sort_stage else ""))
+    if c.retention_stage:
+        verb = "moved to Trash" if commit else "WOULD move to Trash"
+        print(f"\n— retention — {verb}: {res.trashed or 'nothing'} "
+              f"(older than {c.retention_stage.policy.days} days, not starred)")
     for e in res.errors:
         print("  ! " + e)
     if not commit:

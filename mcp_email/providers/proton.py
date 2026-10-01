@@ -204,6 +204,52 @@ class ProtonProvider(EmailProvider):
                       reverse=True)
         return messages
 
+    # ── retention: move expired mail to Trash (never expunge outside the moved set) ──
+    def _trash_folder(self) -> str:
+        """The special-use \\Trash mailbox (RFC 6154), else a mailbox literally named "Trash"."""
+        conn = self._imap()
+        typ, data = conn.list()
+        named = None
+        for raw in data or []:
+            line = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+            m = re.search(r'"([^"]*)"\s*$', line) or re.search(r"(\S+)\s*$", line)
+            if not m:
+                continue
+            if "\\Trash" in line:
+                return m.group(1)
+            if m.group(1).lower() == "trash":
+                named = m.group(1)
+        if named:
+            return named
+        raise LookupError("no Trash mailbox found (special-use \\Trash or 'Trash')")
+
+    def trash_expired(self, folder: str, older_than_days: int, limit: int,
+                      dry_run: bool = False) -> int:
+        if older_than_days <= 0 or limit <= 0:
+            return 0
+        trash = self._trash_folder()
+        if folder.lower() in ("inbox", trash.lower()):
+            raise ValueError(f"refusing retention on {folder!r}")
+        conn = self._imap()
+        if conn.select(self._quote(folder), readonly=dry_run)[0] != "OK":
+            raise RuntimeError(f"cannot select folder: {folder}")
+        # BEFORE = server INTERNALDATE (arrival), date-granular; UNFLAGGED = not starred.
+        typ, data = conn.uid("SEARCH", None, "BEFORE", _imap_date(older_than_days), "UNFLAGGED")
+        if typ != "OK" or not data or not data[0]:
+            return 0
+        uids = data[0].split()[:limit]                     # lowest UIDs = oldest first
+        if dry_run or not uids:
+            return len(uids)
+        uid_set = b",".join(uids).decode()
+        if conn.uid("MOVE", uid_set, self._quote(trash))[0] == "OK":
+            return len(uids)
+        # Fallback: COPY to Trash, then flag + UID EXPUNGE exactly the copied set.
+        if conn.uid("COPY", uid_set, self._quote(trash))[0] != "OK":
+            raise RuntimeError(f"COPY to {trash} failed")
+        conn.uid("STORE", uid_set, "+FLAGS", "(\\Deleted)")
+        conn.uid("EXPUNGE", uid_set)                        # RFC 4315 — only these uids
+        return len(uids)
+
     def get_email(self, message_id: str) -> EmailMessage | None:
         conn = self._imap()
         for folder in self.list_folders():

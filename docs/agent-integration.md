@@ -48,6 +48,16 @@ The optional sorter (Jev decision model) files root-folder mail and writes **Int
 - **Cloud folders:** the sorter uses all five `folders` keys from `/agent/cloud/config`; make sure the
   Email Agent settings page lets users name Interaction and Social too.
 
+## Mailbox retention work items (spec §3.8)
+- **Settings → Email Agent → "Mailbox retention":** per user, "Move to Trash after N days" for
+  **Social** and **Postings** (each off or 1–365; suggest 14). Help text: read *and* unread mail older
+  than N days goes to Trash; starred mail is kept; Interaction and Unprocessed are never cleaned; the
+  mail provider empties Trash (Gmail 30 days; Proton needs "auto-delete unwanted messages" on).
+- **Storage + API:** two nullable ints (e.g. `retention_social_days`, `retention_postings_days`),
+  validated 0/1–365 server-side; return them as the optional `retention` block in
+  `GET /agent/cloud/config/{user_id}`: `{"social_days": 14, "postings_days": 14}`. Absent ⇒ off.
+- **Optional:** accept a `trashed` count on `POST /agent/runs` and show it in the Email Agent stats.
+
 ## Non-negotiable security obligations on job-radar (see spec §5)
 - `[C2]` URL scheme allowlist + output sanitization for all agent-derived fields (stored-XSS → account takeover).
 - `[H1]` Identity derived from API key; never trust `user_id` from the request; validate ownership of every id.

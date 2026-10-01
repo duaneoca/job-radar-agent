@@ -53,6 +53,12 @@ class AgentSettings(BaseSettings):
     # (IntelliSearch) are recognised by Jev as job alerts.
     bulk_recruiter_domains: str = ""
 
+    # Retention (INTEGRATION_SPEC §3.8): move mail older than N days (read or unread, not starred) from
+    # Social / Postings to the provider's Trash. 0 = off. Deterministic — no model involved.
+    retention_social_days: int = 0
+    retention_postings_days: int = 0
+    retention_max_per_run: int = 200
+
     # Sender policy (checked before any LLM call). Comma-separated; an EMPTY value allows all senders.
     allowed_sender_domains: str = ",".join(DEFAULT_ALLOWED_DOMAINS)
     require_sender_auth: bool = True
@@ -128,6 +134,13 @@ def make_sort_stage(reader, settings: AgentSettings = settings):
     return SortStage(reader, make_jev(settings), sort_config(settings))
 
 
+def make_retention_policy(settings: AgentSettings = settings):
+    from .retention import RetentionPolicy
+    return RetentionPolicy.from_values(settings.retention_social_days,
+                                       settings.retention_postings_days,
+                                       settings.retention_max_per_run)
+
+
 def make_sender_policy(settings: AgentSettings = settings) -> SenderPolicy:
     return SenderPolicy.from_values(settings.allowed_sender_domains, settings.require_sender_auth,
                                     settings.trusted_authserv_ids)
@@ -179,6 +192,14 @@ def policy_from_config_bundle(bundle: dict) -> SenderPolicy:
     p = bundle.get("email_policy") or {}
     return SenderPolicy.from_values(p.get("allowed_sender_domains"), p.get("require_sender_auth"),
                                     p.get("trusted_authserv_ids"))
+
+
+def retention_from_config_bundle(bundle: dict):
+    """`retention` block (§3.8): {social_days, postings_days}; absent ⇒ off (older Job Radar deploys)."""
+    from .retention import RetentionPolicy
+    r = bundle.get("retention") or {}
+    return RetentionPolicy.from_values(r.get("social_days"), r.get("postings_days"),
+                                       settings.retention_max_per_run)
 
 
 def zero_action_from_config_bundle(bundle: dict) -> str:

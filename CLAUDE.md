@@ -85,8 +85,11 @@ screen ─┬─ sender rejected ───────────────�
 
 - **Never touch the Job Radar DB directly**; never create `Job`/`UserJobReview` rows (the user imports
   from the inbox via the bookmarklet).
-- **Mailbox tools: read / mark-read / move-to-Unprocessed only** — no delete/archive (guardrail by
-  absence). Reads use `BODY.PEEK[]` so nothing is marked read by reading.
+- **Mailbox mutations: read / mark-read / move** per message, plus ONE removal path: the retention
+  sweep (`agent/retention.py`, spec §3.8 / [R1]) — Social + Postings only (hard allow-list), older
+  than N days by server date, read or unread, NOT starred, **moved to Trash** (never permanently
+  deleted), capped per run. It takes no message ids (no model output can select mail) and is never an
+  MCP tool. Reads use `BODY.PEEK[]` so nothing is marked read by reading.
 - **Only UNREAD mail** is processed (root folder by the sorter, Postings by the link picker). Read =
   the human owns it.
 - **Idempotency key = RFC822 `Message-ID`**, scoped `(user_id, message_id)`.
@@ -114,6 +117,8 @@ screen ─┬─ sender rejected ───────────────�
 - **Privacy [H2]:** subject + link texts/nearby text go to the LLM provider and Langfuse (much less than
   V1's full bodies). The sorter sends From + Subject + a trimmed body (≤4k chars, no URLs/quotes) and
   signature lines to TypeSafe, which publishes no retention policy. Document, don't claim "never leaves."
+- **Retention [R1]:** deterministic Trash-only sweep as above; the MCP Email Reader exposes no
+  trash/delete tool (tested). Known risk: a stale Bridge view could trash mail the human moved on the web.
 - **Cost/DoS [H4]:** per-run email cap, one LLM call per attempt (max 3), daily spend ceiling enforced
   on every entry point, cloud circuit breaker + total-email budget.
 - **No link dereferencing [M2]**, **no attachment parsing / no remote fetch [M1]** — tested.

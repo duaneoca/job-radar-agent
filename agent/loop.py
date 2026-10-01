@@ -47,6 +47,7 @@ def run_loop(*, once: bool, dry_run: bool, interval: int,
                 spend_store=components.spend_store,
                 inbox_base_url=components.inbox_base_url, environment="local", dry_run=dry_run,
                 sort_stage=getattr(components, "sort_stage", None),
+                retention_stage=getattr(components, "retention_stage", None),
             )
             iterations += 1
             ts = time.strftime("%H:%M:%S")
@@ -55,7 +56,9 @@ def run_loop(*, once: bool, dry_run: bool, interval: int,
             else:
                 print(f"[{ts}] {res.status} emails={res.emails_processed} "
                       f"postings={res.postings_created} duplicates={res.duplicates_skipped} "
-                      f"unprocessed={res.escalations} retries={res.retries}")
+                      f"unprocessed={res.escalations} retries={res.retries}"
+                      + (f" sorted={res.sorted}" if getattr(res, "sorted", None) else "")
+                      + (f" trashed={res.trashed}" if getattr(res, "trashed", None) else ""))
                 for e in res.errors[:10]:
                     print(f"    ! {e}")
             if once or _STOP["flag"]:

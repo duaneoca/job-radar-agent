@@ -1,7 +1,7 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.4 (agent sorter: Jev routes root-folder mail and writes Interaction mail + recruiter cards — §3.7)
-**Previous:** 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
+**Version:** 0.5 (mailbox retention: expired Social/Postings mail → Trash, per-user days — §3.8)
+**Previous:** 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
 
@@ -242,7 +242,7 @@ user); both endpoints in-cluster-only (NetworkPolicy + nginx block, same posture
 | Method/Path | Returns | Notes |
 |---|---|---|
 | `GET /agent/cloud/users` | `[{user_id, provider, enabled}]` | **No secrets.** Enabled cloud users with stored creds. |
-| `GET /agent/cloud/config/{user_id}` | `{llm, folders, email_credentials, email_policy?, slack?}` | One user's decrypted config (same shape as `/agent/config`). `email_policy` is optional (§3.6); absent ⇒ agent defaults. |
+| `GET /agent/cloud/config/{user_id}` | `{llm, folders, email_credentials, email_policy?, retention?, slack?}` | One user's decrypted config (same shape as `/agent/config`). `email_policy` (§3.6) and `retention` (§3.8) are optional; absent ⇒ agent defaults (retention off). |
 
 **Split enumerate from fetch on purpose** `[H6]`: the runner loops `users` → fetches ONE
 `config/{user_id}` → processes → **discards that user's creds** → next. Never holds all users' secrets
@@ -284,6 +284,7 @@ A dedicated **Settings → Email Agent** page is the single per-user home for th
 | **Email connection** — Gmail "Connect" (OAuth) or IMAP creds (cloud users); local self-host uses local `.env` | `email_credentials` `[C3/H5]` |
 | **Folder config** — root + subfolder names. The sorter (§3.7, when enabled) reads the **root** and files into all four; the link picker reads **Postings** and moves problems to **Unprocessed** | folder layout `[D6]` |
 | **Email policy (NEW, §3.6)** — allowed sender domains (list), require sender authentication (toggle, default on), what to do with emails that have no postings (mark read / move to Unprocessed) | `email_policy` in the cloud config |
+| **Mailbox retention (NEW, §3.8)** — "Move to Trash after N days" for **Social** and **Postings** (each: off, or 1–365 days; suggested 14). Help text: read and unread mail older than N days goes to Trash; **starred mail is kept**; Interaction and Unprocessed are never cleaned; Trash is emptied by the mail provider (Gmail after 30 days; Proton when its "auto-delete unwanted messages" setting is on) | `retention` in the cloud config |
 | **Notifications** — Slack/Telegram/Discord channel + connect | notifier config `[D16]` |
 | **Agent status & stats** — last run / health + the per-user business stats | `agent_runs` + `GET /agent/stats` `[D21/Q8]` |
 | **Enable / disable** — pause the agent for this user | (toggle) |
@@ -543,6 +544,39 @@ label drift the new rules intentionally overturn — $0.016, ~95 ms/email).
 
 **Cloud:** per-user folders come from the cloud config `folders` block; the Jev key from the pod env.
 
+### 3.8 Mailbox retention — expired mail → Trash `[D26 / R1]`
+
+The agent's only way to remove mail. **Deterministic, never model-driven:** eligibility is decided by
+the mail server's own arrival date and flags; no message id is passed in, so nothing an LLM or Jev
+outputs can select a message.
+
+| Rule | |
+|---|---|
+| Folders | **Social** and **Postings** only — a hard-coded allow-list. Interaction, Unprocessed, the root, the Inbox and every other folder are never touched. |
+| Eligible | arrived more than N days ago (IMAP `BEFORE` on INTERNALDATE / Gmail `older_than:Nd`), **read or unread**, and **not starred** (`UNFLAGGED` / `-is:starred`) — star a message to keep it |
+| Action | **move to the provider's Trash** (IMAP special-use `\Trash`, else a mailbox named "Trash"; Gmail `messages.trash`). Never a permanent delete; the provider empties Trash later (Gmail 30 days; Proton with "auto-delete unwanted messages" on). |
+| Limits | `RETENTION_MAX_PER_RUN` (default 200) shared across folders; refuses the Inbox and Trash itself |
+| When | last stage of a pass, inside the run lock; dry run counts only (folders opened read-only) |
+| Surface | in-process only — **never an MCP tool** (the Email Reader's tool list stays read / mark-read / move) |
+
+**Configuration (dual design):** local → `.env` `RETENTION_SOCIAL_DAYS`, `RETENTION_POSTINGS_DAYS`
+(0 = off, the default). Cloud → the optional `retention` block in `GET /agent/cloud/config/{user_id}`,
+set on the Email Agent settings page (§2.2a):
+
+```json
+"retention": { "social_days": 14, "postings_days": 14 }   // each: null/0 = off, else 1–365
+```
+
+Absent block or fields ⇒ off, so older Job Radar deploys are unaffected. Job Radar stores these per
+user (e.g. two nullable int columns next to the email policy) and validates the range server-side.
+
+**Known risk:** a stale Proton Bridge view (seen in practice) could list a message under Social after
+the human moved it elsewhere on the web; retention would then trash it from its new folder.
+Mitigations: Trash is recoverable, starring protects, per-run cap, counts in every run summary.
+
+**Run record:** counts go in the run summary/logs; `POST /agent/runs` has no field for them yet
+(Job Radar ignores unknown fields; add `trashed` there if the ops dashboard should show it).
+
 ---
 
 ## 4. Writer MCP (Server 2) tool surface (job-radar implements)
@@ -578,6 +612,7 @@ reachable. Cloudflare→origin TLS Full (Strict). `[H3]`
 | H6 | **Decrypted-credential transit & handling** — `GET /agent/config` returns plaintext secrets. TLS-only; agent holds them ephemerally in memory only (never log, never write to disk/checkpoint); minimize lifetime; endpoint rate-limited + audit-logged. **Cloud multi-user:** per-user isolation so one run's compromise ≠ all users' keys; consider not holding all users' creds simultaneously (fetch-per-user, discard after). | both |
 | H6a | **Decrypted creds never traverse Cloudflare.** Cloud agents call `GET /agent/config` **in-cluster** (`http://tracker-api`), bypassing the Cloudflare TLS-termination edge. **Local agents don't call it at all** — they use local `.env` creds (the owner's own LLM key + Proton creds; Gmail tokens for cloud users stay in-cluster). Result/telemetry data (inbox writes, `POST /agent/runs`) carries no creds, so it uses the normal Cloudflare path. **Enforced (2026-06-12):** job-radar gates `/agent/config` to in-cluster only; the other `/agent/*` endpoints stay externally reachable via `X-Agent-Key`. | both |
 | M1/M2 | No attachment parsing, no remote content fetch, agent never dereferences links | agent |
+| R1 | **No permanent delete, anywhere.** The only removal is the §3.8 retention sweep: allow-listed folders (Social, Postings), server-date + not-starred eligibility, move to Trash, capped per run, never exposed as an MCP tool, never selected by model output | agent |
 | L5 | Posting links extracted from email: scheme-allowlisted agent-side (`clean_link`, http/https only) before send AND re-validated by job-radar at write+render (C2); never dereferenced (M2); residual phishing-on-click mitigated by human review + showing host | both |
 
 ---
