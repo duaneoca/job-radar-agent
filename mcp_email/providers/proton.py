@@ -190,6 +190,20 @@ class ProtonProvider(EmailProvider):
                       reverse=True)
         return messages[:limit] if limit else messages
 
+    def get_recent(self, folder: str, limit: int) -> list[EmailMessage]:
+        conn = self._imap()
+        # EXAMINE (readonly select): the server cannot change any flag in this folder session.
+        if conn.select(self._quote(folder), readonly=True)[0] != "OK":
+            raise RuntimeError(f"cannot examine folder: {folder}")
+        typ, data = conn.uid("SEARCH", None, "ALL")
+        if typ != "OK" or not data or not data[0]:
+            return []
+        uids = data[0].split()[-limit:]           # highest UIDs = most recently arrived
+        messages = [m for uid in uids if (m := self._fetch_by_uid(folder, uid)) is not None]
+        messages.sort(key=lambda m: m.received_at or datetime.min.replace(tzinfo=timezone.utc),
+                      reverse=True)
+        return messages
+
     def get_email(self, message_id: str) -> EmailMessage | None:
         conn = self._imap()
         for folder in self.list_folders():

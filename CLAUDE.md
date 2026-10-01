@@ -1,11 +1,14 @@
 # Job Radar Email Agent — CLAUDE.md
 
-Turns job-alert emails into postings in Job Radar's Inbox. **V2 design:** deterministic link
-extraction → ONE small LLM call that picks posting links by number → deterministic verification with
-a feedback-only retry loop → dedup → write. Standalone **public** portfolio repo.
+Sorts job-hunt mail and turns job-alert emails into postings in Job Radar's Inbox. **Sorter**
+(optional, `SORTER_ENABLED`): ONE Jev call (TypeSafe decision model — typed answers, never text) routes
+unread root-folder mail to Interaction / Postings / Social / Unprocessed; Interaction mail is written to
+the inbox with a recruiter card. **V2 link picker:** deterministic link extraction → ONE small LLM call
+that picks posting links by number → deterministic verification with a feedback-only retry loop →
+dedup → write. Standalone **public** portfolio repo.
 
 **Companion repo:** `job-radar` (../job-radar) — the platform. Contract: **`INTEGRATION_SPEC.md`**
-(source of truth; change it in the same PR as any contract change). V2 is §3.6.
+(source of truth; change it in the same PR as any contract change). V2 is §3.6; the sorter §3.7.
 **V1** (LLM classify + LLM critic over every job email) is archived at tag `v1-final`.
 
 ---
@@ -17,6 +20,11 @@ agent/
   cli.py            `job-radar-agent {run|cloud|doctor|models|version}`
   extract.py        HTML → numbered link candidates (text, safe URL, bounded nearby text)
   senders.py        sender allow-list + DMARC check (before any LLM spend)
+  jev.py            TypeSafe Jev client (POST /v1/systemone; retries; cost tracking)
+  sorter.py         the Jev category question + pure routing rule (folder-summed probabilities,
+                    bulk-recruiter sender rule)
+  recruiter.py      §3.5 card from header/signature; Jev only PICKS title/employer fragments
+  sort_stage.py     sort pass: classify → (Interaction: inbox write) → the one move
   schemas.py        LinkPicks — the LLM's only output shape
   verify.py         deterministic checks of the picks + corrective feedback
   dedup.py          dedup keys + SqliteDedupStore (local) / NullDedupStore (cloud)
@@ -25,9 +33,10 @@ agent/
   bootstrap.py loop.py   local wiring + interval loop;  cloud.py   multi-user runner
   config.py         .env settings + per-user cloud-config readers
   seed_prompts/link_picker.md   the one prompt
-mcp_email/          MCP Server 1 — Email Reader (stdio) + providers (proton · gmail · imap)
+mcp_email/          MCP Server 1 — Email Reader (stdio) + providers (proton · gmail · imap, e.g. Yahoo)
 notifications/      notifier abstraction + slack/telegram/discord; run-summary dispatch
-scripts/            run_local (dry-run report), run_loop, run_cloud, smoke_*, mint_agent_key, gmail_auth
+scripts/            run_local (dry-run report), eval_sorter (read-only accuracy vs sorted folders),
+                    run_loop, run_cloud, smoke_*, mint_agent_key, gmail_auth
 tests/              synthetic samples only (tests/samples.py) — real emails are never committed
 ```
 
@@ -37,7 +46,21 @@ tests/              synthetic samples only (tests/samples.py) — real emails ar
 
 ---
 
-## Pipeline (one email)
+## Sort stage (one email, runs first; `SORTER_ENABLED`)
+
+```
+unread in ROOT → Jev category → folder-summed prob ≥ min & margin ok? ─ no → Unprocessed (read)
+   ├─ interaction  → POST /agent/inbox (no postings; card if recruiter_outreach) → move (unread)
+   ├─ postings     → move (unread — the link picker below takes it this run); optional
+   │                 BULK_RECRUITER_DOMAINS land here by SENDER rule, never by Jev
+   └─ social       → move (read)
+```
+
+- Jev never produces text: categories are ours, card values are copied from the email.
+- A move that can't find the message (stale Bridge view) is `gone`, not an error.
+- Tune category descriptions with `scripts/eval_sorter.py`, not by guessing.
+
+## Link-picker pipeline (one email)
 
 ```
 screen ─┬─ sender rejected ─────────────────────────────────→ finalize (→ Unprocessed)
@@ -64,7 +87,8 @@ screen ─┬─ sender rejected ───────────────�
   from the inbox via the bookmarklet).
 - **Mailbox tools: read / mark-read / move-to-Unprocessed only** — no delete/archive (guardrail by
   absence). Reads use `BODY.PEEK[]` so nothing is marked read by reading.
-- **Only UNREAD mail in the Postings folder** is processed. Read = the human owns it.
+- **Only UNREAD mail** is processed (root folder by the sorter, Postings by the link picker). Read =
+  the human owns it.
 - **Idempotency key = RFC822 `Message-ID`**, scoped `(user_id, message_id)`.
 - **Posting cap = 30 per email** (truncate, flag `truncated`).
 - **Dedup keys are recorded only after Job Radar accepted the write.**
@@ -88,7 +112,8 @@ screen ─┬─ sender rejected ───────────────�
   verified against the email. URLs never come from the model.
 - **Sender spoofing:** allow-list + topmost trusted `dmarc=pass` for the From domain, before any LLM call.
 - **Privacy [H2]:** subject + link texts/nearby text go to the LLM provider and Langfuse (much less than
-  V1's full bodies). Document, don't claim "never leaves."
+  V1's full bodies). The sorter sends From + Subject + a trimmed body (≤4k chars, no URLs/quotes) and
+  signature lines to TypeSafe, which publishes no retention policy. Document, don't claim "never leaves."
 - **Cost/DoS [H4]:** per-run email cap, one LLM call per attempt (max 3), daily spend ceiling enforced
   on every entry point, cloud circuit breaker + total-email budget.
 - **No link dereferencing [M2]**, **no attachment parsing / no remote fetch [M1]** — tested.
@@ -106,6 +131,11 @@ screen ─┬─ sender rejected ───────────────�
 - **Overlap guard:** PID lockfile (stale locks self-reclaim).
 
 ## Status
+
+Sorter (2026-09-29): built on `feat/jev-sorter`, 205 offline tests; eval on 231 real sorted emails:
+97 % auto-routed, 95 % label agreement (remainder = intended label drift). Not yet run in commit mode.
+Open: job-radar should skip relay senders in `/recruiters/suggestions` (§3.7 relay rule); Proton
+Bridge can desync (Repair fixes it).
 
 V2 built and verified on real mail (dry run, 10 emails: 10/10 verified first try, $0.029 total,
 18 s). ~150 offline tests. Open items: Job Radar Phase A/B for `dedup_key` + `email_policy` UI

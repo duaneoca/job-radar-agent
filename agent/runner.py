@@ -1,8 +1,10 @@
 """
-Top-level runner — one pass over the unread Postings folder (V2).
+Top-level runner — one pass: [sort the root folder] → the unread Postings folder (V2).
 
-Acquire lock → fetch unread (newest-first; age + count caps applied by the reader) → run the
-per-email graph with per-email error isolation → report a run record (ALWAYS, even on crash).
+Acquire lock → preflight → optional SORT stage (agent/sort_stage.py: Jev routes root-folder mail into
+Interaction / Postings / Social / Unprocessed) → fetch unread Postings (newest-first; age + count caps
+applied by the reader) → run the per-email graph with per-email error isolation → report a run record
+(ALWAYS, even on crash). Sorting first means mail it files into Postings is picked up in the same run.
 
 Dry-run wraps the reader, writer and duplicate store so NOTHING changes — no mail marked or moved, no
 Job Radar writes, no duplicate keys recorded — while the LLM pick + verification still run.
@@ -35,6 +37,9 @@ class RunResult:
     duplicates_skipped: int = 0
     escalations: int = 0                    # emails moved to Unprocessed
     retries: int = 0                        # extra pick attempts beyond the first
+    interactions_recorded: int = 0          # Interaction mail written to the inbox by the sorter
+    sorted: dict = field(default_factory=dict)          # sorter: destination folder → count
+    sort_details: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     skipped: bool = False                   # lock held
     details: list[dict] = field(default_factory=list)
@@ -45,7 +50,7 @@ class RunResult:
             "environment": environment, "agent_version": agent_version,
             "status": self.status, "started_at": started_at, "finished_at": finished_at,
             "emails_processed": self.emails_processed, "postings_created": self.postings_created,
-            "interactions_recorded": 0,     # V2 handles postings only (field kept for the contract)
+            "interactions_recorded": self.interactions_recorded,
             "escalations": self.escalations, "retries": self.retries,
             "error_summary": "; ".join(self.errors)[:2000] or None,
         }
@@ -123,6 +128,7 @@ def run_once(
     spend_key: str = "local",
     daily_ceiling: float | None = None,
     spend_store=None,
+    sort_stage=None,
 ) -> RunResult:
     from notifications import dispatch as _dispatch
     from notifications.base import NullNotifier
@@ -131,8 +137,10 @@ def run_once(
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     lf = get_langfuse()
 
+    jev = getattr(sort_stage, "jev", None)
+
     def _run_cost() -> float:
-        return getattr(llm, "run_cost", 0.0)
+        return getattr(llm, "run_cost", 0.0) + getattr(jev, "run_cost", 0.0)
 
     def _go() -> RunResult:
         result = RunResult()
@@ -166,6 +174,21 @@ def run_once(
             return result
         if hasattr(llm, "reset_cost"):
             llm.reset_cost()
+        if hasattr(jev, "reset_cost"):
+            jev.reset_cost()
+
+        if sort_stage is not None:
+            s = sort_stage.run(cached, dry_run=dry_run, over_budget=lambda: bool(
+                enforce_budget and already + _run_cost() >= daily_ceiling))
+            result.sorted = dict(s.moved)
+            result.sort_details = s.details
+            result.interactions_recorded = s.inbox_written
+            result.escalations += s.moved.get("unprocessed", 0)
+            if s.gone:
+                result.sorted["gone"] = s.gone
+            if s.errors or s.halted:
+                result.status = "partial"
+                result.errors.extend(s.errors + ([s.halted] if s.halted else []))
 
         for email in reader.get_unread():
             if enforce_budget and already + _run_cost() >= daily_ceiling:

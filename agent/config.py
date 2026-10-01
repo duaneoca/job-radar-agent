@@ -18,7 +18,7 @@ from .llm_litellm import LiteLLMClient
 from .nodes import ZERO_POSTINGS_ACTIONS
 from .observability import get_langfuse
 from .paths import env_file
-from .senders import DEFAULT_ALLOWED_DOMAINS, DEFAULT_TRUSTED_AUTHSERV_IDS, SenderPolicy
+from .senders import DEFAULT_ALLOWED_DOMAINS, split_list, DEFAULT_TRUSTED_AUTHSERV_IDS, SenderPolicy
 
 
 class AgentSettings(BaseSettings):
@@ -38,6 +38,20 @@ class AgentSettings(BaseSettings):
     # Per-call timeout (s). A fast model answers in a few seconds; a stalled call should fail fast
     # and be retried rather than burn the whole window × retries.
     llm_timeout_seconds: float = 25.0
+
+    # Sorter — Jev decision model (TypeSafe). SYSTEM-WIDE key, not BYOK. When enabled, each run first
+    # sorts unread root-folder mail into Interaction / Postings / Social / Unprocessed.
+    sorter_enabled: bool = False
+    typesafe_api_key: str = ""
+    jev_model: str = "jev-latest"
+    # Route only a confident, clear winner; everything else → Unprocessed. Tune with
+    # scripts/eval_sorter.py against your already-sorted folders.
+    sorter_min_confidence: float = 0.85
+    sorter_min_margin: float = 0.30
+    # Recruiter mail from these sender domains is a bulk mailing → Postings (never a personal note).
+    # Empty by default: Dice recruiter mail is real outreach (Interaction); Dice job alerts
+    # (IntelliSearch) are recognised by Jev as job alerts.
+    bulk_recruiter_domains: str = ""
 
     # Sender policy (checked before any LLM call). Comma-separated; an EMPTY value allows all senders.
     allowed_sender_domains: str = ",".join(DEFAULT_ALLOWED_DOMAINS)
@@ -85,6 +99,33 @@ def make_llm(settings: AgentSettings = settings) -> LLMClient:
     """The link-picker LLM from local env (BYOK), Langfuse-traced when configured."""
     return LiteLLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key,
                          langfuse=get_langfuse(), timeout=settings.llm_timeout_seconds)
+
+
+def make_jev(settings: AgentSettings = settings):
+    """The sorter's Jev client (one system-wide TypeSafe key)."""
+    from .jev import JevClient
+    return JevClient(settings.typesafe_api_key, model=settings.jev_model)
+
+
+def bulk_recruiter_domains(settings: AgentSettings = settings) -> tuple[str, ...]:
+    return split_list(settings.bulk_recruiter_domains)
+
+
+def sort_config(settings: AgentSettings = settings):
+    from .sort_stage import SortConfig
+    return SortConfig(min_confidence=settings.sorter_min_confidence,
+                      min_margin=settings.sorter_min_margin,
+                      bulk_domains=bulk_recruiter_domains(settings))
+
+
+def make_sort_stage(reader, settings: AgentSettings = settings):
+    """The sort stage over `reader` (the ROOT folder), or None when the sorter is disabled."""
+    if not settings.sorter_enabled:
+        return None
+    if not settings.typesafe_api_key:
+        raise SystemExit("✗ SORTER_ENABLED=true but TYPESAFE_API_KEY is not set")
+    from .sort_stage import SortStage
+    return SortStage(reader, make_jev(settings), sort_config(settings))
 
 
 def make_sender_policy(settings: AgentSettings = settings) -> SenderPolicy:

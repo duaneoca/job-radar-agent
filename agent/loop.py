@@ -46,6 +46,7 @@ def run_loop(*, once: bool, dry_run: bool, interval: int,
                 spend_key="local", daily_ceiling=components.daily_ceiling,
                 spend_store=components.spend_store,
                 inbox_base_url=components.inbox_base_url, environment="local", dry_run=dry_run,
+                sort_stage=getattr(components, "sort_stage", None),
             )
             iterations += 1
             ts = time.strftime("%H:%M:%S")
