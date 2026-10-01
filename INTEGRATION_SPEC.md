@@ -542,7 +542,9 @@ written; `escalations` includes sorter → Unprocessed.
 (first real eval, 231 emails: 97 % auto-routed, 95 % agreement with existing labels — the rest were
 label drift the new rules intentionally overturn — $0.016, ~95 ms/email).
 
-**Cloud:** per-user folders come from the cloud config `folders` block; the Jev key from the pod env.
+**Cloud:** per-user folders come from the cloud config `folders` block. The Jev key is system-wide:
+`TYPESAFE_API_KEY` in the `email-agent-secrets` Secret (loaded by the agent CronJob via `envFrom`), with
+`SORTER_ENABLED` etc. in the `email-agent-config` ConfigMap — never in the DB, cloud config, or UI.
 
 ### 3.8 Mailbox retention — expired mail → Trash `[D26 / R1]`
 
