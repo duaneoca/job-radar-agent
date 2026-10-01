@@ -18,8 +18,8 @@ from typing import Any, Callable
 
 import httpx
 
-from .config import (llm_from_config_bundle, policy_from_config_bundle,
-                     zero_action_from_config_bundle)
+from .config import (llm_from_config_bundle, make_sort_stage, policy_from_config_bundle,
+                     retention_from_config_bundle, zero_action_from_config_bundle)
 from .dedup import NullDedupStore
 from .reader import ProviderReader
 from .runner import run_once
@@ -62,6 +62,8 @@ class _UserComponents:
     zero_postings_action: str
     user_notifier: Any                      # the user's own Slack (or Null if not connected)
     close: Callable[[], None]
+    sort_stage: Any = None                  # SortStage over the user's root (SORTER_ENABLED)
+    retention_stage: Any = None             # the user's retention settings (§3.8), if any
 
 
 def _full_label(root: str, leaf: str, sep: str = "/") -> str:
@@ -81,11 +83,16 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
     # bare leaves or full paths — _full_label joins idempotently.
     source = _full_label(root, f["postings"])
     unprocessed = _full_label(root, f["unprocessed"])
+    # The sorter's destinations (per-user folder names; fall back to the standard leaves).
+    dests = {k: _full_label(root, f.get(k) or k.capitalize())
+             for k in ("interaction", "postings", "social", "unprocessed")}
 
     provider_kind = ec.get("provider", "gmail")
     if provider_kind == "gmail":
         from mcp_email.providers.gmail import GmailProvider
-        provider = GmailProvider(root_folder=source, creds_info=ec)   # a move removes the source label
+        # a move removes whichever managed label the message has (root when sorting, else Postings)
+        provider = GmailProvider(root_folder=source, creds_info=ec,
+                                 managed_folders=[root, *dests.values()])
     elif provider_kind == "imap":
         from mcp_email.providers.imap import ImapProvider
         provider = ImapProvider(creds_info=ec)
@@ -94,6 +101,14 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
 
     reader = ProviderReader(provider, source=source, dest_folders={"unprocessed": unprocessed},
                             since_days=since_days, limit=limit)
+    # Jev key is system-wide (pod env), not per-user; the sorter shares this user's connection.
+    sort_stage = make_sort_stage(ProviderReader(provider, source=root, dest_folders=dests,
+                                                since_days=since_days, limit=limit))
+    retention = retention_from_config_bundle(cfg)
+    retention_stage = None
+    if retention.enabled:
+        from .retention import RetentionStage
+        retention_stage = RetentionStage(provider, dests, retention)   # allow-list applied inside
     writer = RestWriter(base_url, internal_token=internal_token, user_id=user_id)
     llm = llm_from_config_bundle(cfg)          # the user's own provider/model/key
     if llm is None:
@@ -114,7 +129,7 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
         user_notifier = NullNotifier()
 
     def _close():
-        for obj in (provider, writer, user_notifier):
+        for obj in (provider, writer, user_notifier, getattr(sort_stage, "jev", None)):
             if hasattr(obj, "close"):
                 try:
                     obj.close()
@@ -123,7 +138,8 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
 
     return _UserComponents(reader=reader, writer=writer, llm=llm, policy=policy, dedup=dedup,
                            zero_postings_action=zero_action, user_notifier=user_notifier,
-                           close=_close)
+                           close=_close, sort_stage=sort_stage,
+                           retention_stage=retention_stage)
 
 
 def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token: str,
@@ -153,6 +169,8 @@ def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token
                     zero_postings_action=comp.zero_postings_action, notifier=per_user_notifier,
                     environment="cloud", dry_run=dry_run, use_lock=False,
                     spend_key=uid, daily_ceiling=daily_ceiling, spend_store=spend_store,
+                    sort_stage=getattr(comp, "sort_stage", None),
+                    retention_stage=getattr(comp, "retention_stage", None),
                 )
             finally:
                 comp.close()                       # discard this user's creds before the next

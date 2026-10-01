@@ -337,3 +337,83 @@ def test_date_without_timezone_does_not_break_newest_first_sort():
             self._msgs[first] = self._msgs[first].replace(b" +0000", b"")   # naive Date header
     msgs = _provider_with_fake(_MixedTZ()).get_unread("Folders/Hire Duane", since_days=14)
     assert len(msgs) == 3 and all(m.received_at.tzinfo is not None for m in msgs)
+
+
+# ── get_recent (offline eval only): EXAMINE + PEEK, never a flag change ──
+
+class _ExamineFakeIMAP(_FakeIMAP):
+    def __init__(self):
+        super().__init__()
+        self.selects = []
+
+    def select(self, folder, readonly=False):
+        self.selects.append((folder, readonly))
+        return "OK", [b"2"]
+
+
+def test_get_recent_is_readonly_and_includes_read_mail():
+    fake = _ExamineFakeIMAP()
+    p = _provider_with_fake(fake)
+    msgs = p.get_recent("Folders/Hire Duane/Social", 1)
+    assert fake.selects == [('"Folders/Hire Duane/Social"', True)], "must EXAMINE (readonly)"
+    searches = [a for c, a in fake.commands if c == "SEARCH"]
+    assert searches == [(None, "ALL")], "must include read mail (no UNSEEN)"
+    assert [a[0] for c, a in fake.commands if c == "FETCH"] == [b"2"], "newest UID only"
+    assert all("BODY.PEEK[]" in " ".join(map(str, a)) for c, a in fake.commands if c == "FETCH")
+    assert not [c for c, _ in fake.commands if c in ("STORE", "MOVE", "COPY", "EXPUNGE")]
+    assert len(msgs) == 1
+
+
+# ── Gmail move = label swap over the MANAGED labels (sorter moves out of root, V2 out of Postings) ──
+
+class _FakeGmail:
+    def __init__(self):
+        self.modified = []
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self
+
+    def labels(self):
+        return self
+
+    def list(self, **kw):
+        if kw.get("q", "").startswith("rfc822msgid:"):
+            return self._exec({"messages": [{"id": "g1"}]})
+        return self._exec({"labels": [{"name": n, "id": n.upper()} for n in
+                                      ("R", "R/Interaction", "R/Postings", "R/Social", "R/Unprocessed")]})
+
+    def modify(self, userId, id, body):
+        self.modified.append(body)
+        return self._exec({})
+
+    @staticmethod
+    def _exec(result):
+        class _E:
+            def execute(self_inner):
+                return result
+        return _E()
+
+
+def _gmail(managed=None):
+    from mcp_email.providers.gmail import GmailProvider
+    p = GmailProvider(root_folder="R/Postings", creds_info={}, managed_folders=managed)
+    p._svc = _FakeGmail()
+    return p
+
+
+def test_gmail_move_removes_every_managed_label_but_the_destination():
+    p = _gmail(["R", "R/Interaction", "R/Postings", "R/Social", "R/Unprocessed"])
+    p.move_and_mark("<m>", "R/Interaction", mark_read=False)
+    (body,) = p._svc.modified
+    assert body["addLabelIds"] == ["R/INTERACTION"]
+    assert set(body["removeLabelIds"]) == {"R", "R/POSTINGS", "R/SOCIAL", "R/UNPROCESSED"}
+
+
+def test_gmail_move_default_removes_only_root_folder_and_marks_read():
+    p = _gmail()
+    p.move_and_mark("<m>", "R/Unprocessed")
+    (body,) = p._svc.modified
+    assert body["removeLabelIds"] == ["R/POSTINGS", "UNREAD"]

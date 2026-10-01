@@ -26,19 +26,28 @@ def run() -> int:
 
     provider = None
     try:
-        if E.email_provider == "gmail":
-            from mcp_email.providers.gmail import GmailProvider
-            provider = GmailProvider(token_file=E.gmail_token_file,
-                                     credentials_file=E.gmail_credentials_file,
-                                     root_folder=folders.source)
-        else:
-            from mcp_email.providers.proton import ProtonProvider
-            provider = ProtonProvider(E.proton_imap_host, E.proton_imap_port,
-                                      E.proton_imap_user, E.proton_imap_password)
+        from .bootstrap import _build_provider
+        provider = _build_provider()
         all_folders = provider.list_folders()
         check("email provider login", True, f"{len(all_folders)} folders/labels")
-        for f in folders.v2_folders():
+        needed = ([folders.root, *folders.all_subfolders()] if A.sorter_enabled
+                  else folders.v2_folders())
+        for f in needed:
             check(f"folder exists: {f}", f in all_folders)
+        from .config import make_retention_policy
+        retention = make_retention_policy()
+        if retention.enabled:
+            try:
+                trash = provider._trash_folder() if hasattr(provider, "_trash_folder") else "Gmail Trash"
+                n_old = {k: provider.trash_expired(getattr(folders, k), d, retention.max_per_run,
+                                                   dry_run=True)
+                         for k, d in retention.days.items() if d > 0}
+                check(f"retention → {trash}", True,
+                      f"days {retention.days}; would move now: {n_old}", critical=False)
+            except Exception as exc:
+                check("retention", False, f"{type(exc).__name__}: {exc}")
+        else:
+            check("retention", False, "off (RETENTION_*_DAYS=0)", critical=False)
         try:
             n = len(provider.get_unread(folders.source, since_days=E.max_email_age_days or None, limit=5))
             check(f"unread in {folders.source} (≤{E.max_email_age_days}d)", True, f"{n}+ found",
@@ -68,6 +77,28 @@ def run() -> int:
         except Exception as exc:
             check(f"LLM reachable ({A.llm_provider}/{A.llm_model})", False,
                   f"{type(exc).__name__}: {str(exc)[:160]}")
+
+    if A.sorter_enabled:
+        if not A.typesafe_api_key:
+            check("sorter: TYPESAFE_API_KEY set", False)
+        else:
+            # One tiny live question (~50 tokens, a fraction of a millionth of a dollar).
+            try:
+                from .config import make_jev
+                from .jev import choice
+                jev = make_jev()
+                try:
+                    jev.ask("ping", {"q": choice("Is this a ping?", {"yes": "yes", "no": "no"})})
+                finally:
+                    jev.close()
+                check(f"sorter: Jev reachable ({A.jev_model})", True,
+                      f"route at ≥{A.sorter_min_confidence} / margin {A.sorter_min_margin}; "
+                      f"bulk senders: {A.bulk_recruiter_domains or 'none'}")
+            except Exception as exc:
+                check(f"sorter: Jev reachable ({A.jev_model})", False,
+                      f"{type(exc).__name__}: {str(exc)[:160]}")
+    else:
+        check("sorter", False, "SORTER_ENABLED=false (postings folder only)", critical=False)
 
     if not A.agent_api_key:
         check("agent API key set", False)

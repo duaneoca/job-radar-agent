@@ -1,10 +1,13 @@
 """
 Email provider interface — the contract every backend (Proton, Gmail, …) implements.
 
-GUARDRAILS (enforced by ABSENCE — see INTEGRATION_SPEC §1 / CLAUDE.md):
-  The interface exposes ONLY read / mark-read / move. There is deliberately no delete or
-  archive method. A provider MUST NOT implement destructive operations. `move_and_mark` is the
-  single mutating call and is atomic (mark \\Seen + move to a sibling folder).
+GUARDRAILS (see INTEGRATION_SPEC §5 [R1] / CLAUDE.md):
+  Per-message mutations are read / mark-read / move only — `move_and_mark` is atomic (mark \\Seen +
+  move to a sibling folder). There is NO permanent delete and NO archive, anywhere.
+  The one exception is `trash_expired`: a RETENTION sweep that moves mail older than N days (and not
+  starred) from one folder to the provider's Trash, recoverable until the provider empties Trash. It
+  takes no message ids — eligibility is decided by the mail server's own date and flags, so nothing a
+  model outputs can select a message for it — and it is never exposed as an MCP tool.
 
 IDEMPOTENCY:
   `EmailMessage.message_id` is the RFC 822 `Message-ID` header — stable across folder moves and
@@ -39,7 +42,7 @@ class EmailMessage:
 
 
 class EmailProvider(ABC):
-    """Read / mark-read / move only. No delete, no archive — by design."""
+    """Read / mark-read / move, plus the retention sweep to Trash. No permanent delete — by design."""
 
     @abstractmethod
     def list_folders(self) -> list[str]:
@@ -58,6 +61,14 @@ class EmailProvider(ABC):
         `limit` — cap the number returned (newest-first), e.g. MAX_EMAILS_PER_RUN. None ⇒ no cap.
         """
 
+    def get_recent(self, folder: str, limit: int) -> list[EmailMessage]:
+        """
+        The `limit` most recent messages in `folder`, READ OR UNREAD, newest-first. Read-only and
+        offline-evaluation only (scripts/eval_sorter.py samples already-sorted folders as ground
+        truth); the agent's runtime path never calls it. Must not change any flag.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def get_email(self, message_id: str) -> EmailMessage | None:
         """Fetch one message by its RFC 822 Message-ID. None if not found."""
@@ -75,6 +86,16 @@ class EmailProvider(ABC):
     @abstractmethod
     def mark_read(self, message_id: str) -> None:
         """Mark the message read WITHOUT moving it (V2: processed mail stays in the Postings folder)."""
+
+    def trash_expired(self, folder: str, older_than_days: int, limit: int,
+                      dry_run: bool = False) -> int:
+        """
+        RETENTION: move up to `limit` messages in `folder` received more than `older_than_days` days
+        ago (server date, read OR unread) and NOT starred/flagged to the provider's Trash. Returns the
+        count moved (or, with `dry_run`, that would be). Never permanently deletes; refuses to run on
+        the Trash or the Inbox. Only the agent's retention stage calls this, for an allow-listed folder.
+        """
+        raise NotImplementedError
 
     def close(self) -> None:  # optional cleanup hook
         """Release any open connection. Default no-op."""

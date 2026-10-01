@@ -1,7 +1,7 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.3 (agent V2: link-picker pipeline for job alerts — §3.6; `dedup_key` + per-user `email_policy`)
-**Previous:** 0.2 added §3.5 recruiter contacts (agent V1 only — see `v1-final` tag).
+**Version:** 0.5 (mailbox retention: expired Social/Postings mail → Trash, per-user days — §3.8)
+**Previous:** 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
 
@@ -60,7 +60,7 @@ set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` o
 | subject | text | |
 | sender | text | |
 | received_at | timestamptz | |
-| category | enum | `recruiter_outreach \| application_confirmation \| job_alert \| network_notification` — agent V2 sends only `job_alert` |
+| category | enum | `recruiter_outreach \| application_confirmation \| job_alert \| network_notification` — the link picker sends `job_alert`; the sorter (§3.7) sends the other three for Interaction mail |
 | confidence | float | model-justified, NOT email-settable `[C1]`. V2 sends `1.0`: every posting passed deterministic verification |
 | raw_extracted_json | jsonb | server-only extraction record. V2 shape in §3.6 (no email content beyond verified titles/companies). V1 `recruiter_outreach` rows carried `recruiter_contact` (§3.5) |
 | validation_attempts | int | |
@@ -242,7 +242,7 @@ user); both endpoints in-cluster-only (NetworkPolicy + nginx block, same posture
 | Method/Path | Returns | Notes |
 |---|---|---|
 | `GET /agent/cloud/users` | `[{user_id, provider, enabled}]` | **No secrets.** Enabled cloud users with stored creds. |
-| `GET /agent/cloud/config/{user_id}` | `{llm, folders, email_credentials, email_policy?, slack?}` | One user's decrypted config (same shape as `/agent/config`). `email_policy` is optional (§3.6); absent ⇒ agent defaults. |
+| `GET /agent/cloud/config/{user_id}` | `{llm, folders, email_credentials, email_policy?, retention?, slack?}` | One user's decrypted config (same shape as `/agent/config`). `email_policy` (§3.6) and `retention` (§3.8) are optional; absent ⇒ agent defaults (retention off). |
 
 **Split enumerate from fetch on purpose** `[H6]`: the runner loops `users` → fetches ONE
 `config/{user_id}` → processes → **discards that user's creds** → next. Never holds all users' secrets
@@ -282,8 +282,9 @@ A dedicated **Settings → Email Agent** page is the single per-user home for th
 |---|---|
 | **Agent key** — generate / revoke; show `key_hint` (last 4); plaintext shown once on create | `agent_api_keys` / `/agent/keys` |
 | **Email connection** — Gmail "Connect" (OAuth) or IMAP creds (cloud users); local self-host uses local `.env` | `email_credentials` `[C3/H5]` |
-| **Folder config** — root + subfolder names. V2 reads **Postings** and moves problems to **Unprocessed** (Interaction/Social unused) | folder layout `[D6]` |
+| **Folder config** — root + subfolder names. The sorter (§3.7, when enabled) reads the **root** and files into all four; the link picker reads **Postings** and moves problems to **Unprocessed** | folder layout `[D6]` |
 | **Email policy (NEW, §3.6)** — allowed sender domains (list), require sender authentication (toggle, default on), what to do with emails that have no postings (mark read / move to Unprocessed) | `email_policy` in the cloud config |
+| **Mailbox retention (NEW, §3.8)** — "Move to Trash after N days" for **Social** and **Postings** (each: off, or 1–365 days; suggested 14). Help text: read and unread mail older than N days goes to Trash; **starred mail is kept**; Interaction and Unprocessed are never cleaned; Trash is emptied by the mail provider (Gmail after 30 days; Proton when its "auto-delete unwanted messages" setting is on) | `retention` in the cloud config |
 | **Notifications** — Slack/Telegram/Discord channel + connect | notifier config `[D16]` |
 | **Agent status & stats** — last run / health + the per-user business stats | `agent_runs` + `GET /agent/stats` `[D21/Q8]` |
 | **Enable / disable** — pause the agent for this user | (toggle) |
@@ -363,7 +364,7 @@ Server: if `matched_review_id` present AND `new_status` in the writable subset �
 }
 ```
 
-### 3.5 Recruiter contact (recruiter_outreach only; agent V1 only) `[D22 extract / D23 linkage]`
+### 3.5 Recruiter contact (recruiter_outreach only; V1, revived by the sorter — §3.7) `[D22 extract / D23 linkage]`
 
 Job Radar never receives the email body (content minimization), so the recruiter's name, phone,
 agency, LinkedIn, and the client they represent — all in the signature/body — are extractable ONLY by
@@ -489,6 +490,95 @@ means *allow any sender*. Unknown `zero_postings_action` values fail the user's 
 
 Until Phase B ships, **cloud users get no cross-email duplicate suppression** (pods keep no state).
 
+### 3.7 Agent sorter — Jev routes the root folder `[D25]`
+
+Optional stage (`SORTER_ENABLED`), run first in each pass, inside the same lock, preflight and daily
+spend ceiling as §3.6. It resurrects V1's folder sorting with **one Jev call** per email (TypeSafe's
+decision model: typed answers + calibrated probabilities, never text) in place of V1's LLM classifier +
+critic. The Jev key is **system-wide** (one `TYPESAFE_API_KEY`), not BYOK.
+
+**Flow (per UNREAD root-folder email):** Jev picks a category → probabilities summed per folder →
+confident (≥ `SORTER_MIN_CONFIDENCE`, margin ≥ `SORTER_MIN_MARGIN`) → that folder, else Unprocessed.
+Interaction mail is written to `POST /agent/inbox` (no postings) **then** moved; everything else is
+only moved. `/agent/inbox` idempotency on `(user_id, message_id)` makes write-then-move safe to repeat.
+
+| Sorter category | Folder | Mailbox | `inbox_emails.category` |
+|---|---|---|---|
+| `recruiter_outreach` | Interaction | stays unread | `recruiter_outreach` + §3.5 card (see relay rule) |
+| `recruiter_outreach` from a bulk channel (`BULK_RECRUITER_DOMAINS`, none by default) | Postings | stays unread | — (the §3.6 link picker handles it) |
+| `application_update` | Interaction | stays unread | `application_confirmation` |
+| `connection_request`, `direct_message` | Interaction | stays unread | `network_notification` |
+| `job_alert` | Postings | stays unread (so §3.6 picks it up this run) | — |
+| `network_social` | Social | marked read | — |
+| `other`, low confidence, ambiguous | Unprocessed | marked read | — |
+
+**Bulk channels are decided by sender, not by Jev:** the channel is in the header, and templated
+agency mail sent directly reads the same. Only `recruiter_outreach` is redirected, so a personal email
+cannot become a posting by this rule.
+
+**Recruiter card (§3.5 shape) without generated text:** name = From display name (relay/ID decorations
+removed); email = sender address unless a relay (LinkedIn/Dice/Indeed/…), else the first signature
+address; phone + `linkedin_url` by pattern; `title` / `employer` = Jev **picks** one of the agent's
+numbered signature fragments (probability ≥ 0.6; a fragment that repeats the subject is rejected —
+it names the role, not the sender); `is_agency` = Jev yes/no (≥ 0.75 / ≤ 0.25, else omitted).
+`represents` and `recruiter_confidence` are omitted. Sent as both `raw_extracted_json.recruiter_contact`
+and typed `recruiter` (§3.5 phases).
+
+**Relay rule:** `/recruiters/suggestions` keys a recruiter by the card's email, else the sender
+address. A SHARED relay sender (e.g. `inmail-hit-reply@linkedin.com`) with no real address in the card would
+merge every such recruiter into one suggestion, so the agent files that mail as `network_notification`
+(the card is still stored). *Open for job-radar:* skip relay/no-reply senders in suggestions (or key
+them by name + linkedin_url); the agent can then send `recruiter_outreach` for them. Dice's relay
+(`…@user.dice.com`) is per recruiter (replies reach them), so it is a usable key: the card takes the
+signature's address when present, else the relay address, and the mail stays `recruiter_outreach`.
+Dice job alerts ("IntelliSearch") are job alerts → Postings.
+
+**Robustness:** a move that cannot find the message (`LookupError`, e.g. a stale Proton Bridge view
+after the human already moved it) counts as `gone`, not an error. Jev 429/529/5xx retry with backoff,
+then the email stays unread for the next run. Run record: `interactions_recorded` = Interaction rows
+written; `escalations` includes sorter → Unprocessed.
+
+**Tuning:** `scripts/eval_sorter.py` scores the sorter read-only against already-sorted folders
+(first real eval, 231 emails: 97 % auto-routed, 95 % agreement with existing labels — the rest were
+label drift the new rules intentionally overturn — $0.016, ~95 ms/email).
+
+**Cloud:** per-user folders come from the cloud config `folders` block. The Jev key is system-wide:
+`TYPESAFE_API_KEY` in the `email-agent-secrets` Secret (loaded by the agent CronJob via `envFrom`), with
+`SORTER_ENABLED` etc. in the `email-agent-config` ConfigMap — never in the DB, cloud config, or UI.
+
+### 3.8 Mailbox retention — expired mail → Trash `[D26 / R1]`
+
+The agent's only way to remove mail. **Deterministic, never model-driven:** eligibility is decided by
+the mail server's own arrival date and flags; no message id is passed in, so nothing an LLM or Jev
+outputs can select a message.
+
+| Rule | |
+|---|---|
+| Folders | **Social** and **Postings** only — a hard-coded allow-list. Interaction, Unprocessed, the root, the Inbox and every other folder are never touched. |
+| Eligible | arrived more than N days ago (IMAP `BEFORE` on INTERNALDATE / Gmail `older_than:Nd`), **read or unread**, and **not starred** (`UNFLAGGED` / `-is:starred`) — star a message to keep it |
+| Action | **move to the provider's Trash** (IMAP special-use `\Trash`, else a mailbox named "Trash"; Gmail `messages.trash`). Never a permanent delete; the provider empties Trash later (Gmail 30 days; Proton with "auto-delete unwanted messages" on). |
+| Limits | `RETENTION_MAX_PER_RUN` (default 200) shared across folders; refuses the Inbox and Trash itself |
+| When | last stage of a pass, inside the run lock; dry run counts only (folders opened read-only) |
+| Surface | in-process only — **never an MCP tool** (the Email Reader's tool list stays read / mark-read / move) |
+
+**Configuration (dual design):** local → `.env` `RETENTION_SOCIAL_DAYS`, `RETENTION_POSTINGS_DAYS`
+(0 = off, the default). Cloud → the optional `retention` block in `GET /agent/cloud/config/{user_id}`,
+set on the Email Agent settings page (§2.2a):
+
+```json
+"retention": { "social_days": 14, "postings_days": 14 }   // each: null/0 = off, else 1–365
+```
+
+Absent block or fields ⇒ off, so older Job Radar deploys are unaffected. Job Radar stores these per
+user (e.g. two nullable int columns next to the email policy) and validates the range server-side.
+
+**Known risk:** a stale Proton Bridge view (seen in practice) could list a message under Social after
+the human moved it elsewhere on the web; retention would then trash it from its new folder.
+Mitigations: Trash is recoverable, starring protects, per-run cap, counts in every run summary.
+
+**Run record:** counts go in the run summary/logs; `POST /agent/runs` has no field for them yet
+(Job Radar ignores unknown fields; add `trashed` there if the ops dashboard should show it).
+
 ---
 
 ## 4. Writer MCP (Server 2) tool surface (job-radar implements)
@@ -518,12 +608,13 @@ reachable. Cloudflare→origin TLS Full (Strict). `[H3]`
 | C3 | Email creds encrypted with dedicated `ENCRYPTION_KEY` (JR-0); decryption server-side only | job-radar |
 | C4 | Slack callback signature-verified, rate-limited, ownership-validated | job-radar |
 | H1 | Identity derived from API key; `user_id` never trusted from request; validate ownership of every id | job-radar |
-| H2 | Email body in LLM/Langfuse disclosed or redacted; admin channel membership controlled | agent |
+| H2 | Email body in LLM/Langfuse disclosed or redacted; admin channel membership controlled. Sorter (§3.7): From + Subject + a trimmed body (URLs removed, quoted history cut, ≤4,000 chars) and signature lines go to TypeSafe (Jev); TypeSafe publishes no retention/training policy — disclosed, not "never leaves" | agent |
 | H4 | Per-run email/token caps + daily spend ceiling + circuit breaker | agent |
 | H5 | Minimal Gmail scope; refresh tokens strongest key tier | both |
 | H6 | **Decrypted-credential transit & handling** — `GET /agent/config` returns plaintext secrets. TLS-only; agent holds them ephemerally in memory only (never log, never write to disk/checkpoint); minimize lifetime; endpoint rate-limited + audit-logged. **Cloud multi-user:** per-user isolation so one run's compromise ≠ all users' keys; consider not holding all users' creds simultaneously (fetch-per-user, discard after). | both |
 | H6a | **Decrypted creds never traverse Cloudflare.** Cloud agents call `GET /agent/config` **in-cluster** (`http://tracker-api`), bypassing the Cloudflare TLS-termination edge. **Local agents don't call it at all** — they use local `.env` creds (the owner's own LLM key + Proton creds; Gmail tokens for cloud users stay in-cluster). Result/telemetry data (inbox writes, `POST /agent/runs`) carries no creds, so it uses the normal Cloudflare path. **Enforced (2026-06-12):** job-radar gates `/agent/config` to in-cluster only; the other `/agent/*` endpoints stay externally reachable via `X-Agent-Key`. | both |
 | M1/M2 | No attachment parsing, no remote content fetch, agent never dereferences links | agent |
+| R1 | **No permanent delete, anywhere.** The only removal is the §3.8 retention sweep: allow-listed folders (Social, Postings), server-date + not-starred eligibility, move to Trash, capped per run, never exposed as an MCP tool, never selected by model output | agent |
 | L5 | Posting links extracted from email: scheme-allowlisted agent-side (`clean_link`, http/https only) before send AND re-validated by job-radar at write+render (C2); never dereferenced (M2); residual phishing-on-click mitigated by human review + showing host | both |
 
 ---

@@ -3,8 +3,8 @@ Gmail provider — Gmail API via OAuth2 (cloud multi-user path; also usable loca
 
 Folders are Gmail LABELS. The root (e.g. "Hire Duane") and its nested subfolders
 ("Hire Duane/Interaction", …) are labels. "Move" = label swap: add the destination label, remove
-the root label, and remove UNREAD (mark read). We only ever call list/get/modify — never send or
-trash — so the no-send/no-delete guarantee is enforced in code (the H5 residual-scope risk).
+the root label, and remove UNREAD (mark read). We only ever call list/get/modify, plus `trash` from the
+retention sweep (recoverable; never `delete`, never send) — the H5 residual-scope risk.
 
 Scope: gmail.modify (minimum that supports messages.modify). Reads use format=full but never fetch
 attachment bodies. `message_id` = RFC 822 Message-ID header (stable); `native_id` = Gmail message id.
@@ -33,10 +33,15 @@ def _b64(data: str | None) -> str:
 
 class GmailProvider(EmailProvider):
     def __init__(self, token_file: str = "token.json", credentials_file: str = "credentials.json",
-                 root_folder: str = "Hire Duane", creds_info: dict | None = None):
+                 root_folder: str = "Hire Duane", creds_info: dict | None = None,
+                 managed_folders: list[str] | None = None):
         self._token_file = token_file
         self._creds_file = credentials_file
         self._root = root_folder
+        # Labels a move takes the message OUT of (all managed folders except the destination). The
+        # sorter moves out of the root and the postings stage out of Postings, so one provider serving
+        # both must drop whichever managed label the message has. Default: just `root_folder`.
+        self._managed = list(managed_folders) if managed_folders else [root_folder]
         self._creds_info = creds_info   # cloud path: authorized-user dict from /agent/cloud/config
         self._svc = None
         self._label_ids: dict[str, str] | None = None   # name → id
@@ -90,6 +95,29 @@ class GmailProvider(EmailProvider):
         msgs = [self._fetch(mid, folder) for mid in ids]
         return [m for m in msgs if m is not None]
 
+    def get_recent(self, folder: str, limit: int) -> list[EmailMessage]:
+        resp = self._service().users().messages().list(
+            userId="me", labelIds=[self._label_id(folder)], maxResults=limit).execute()
+        msgs = [self._fetch(m["id"], folder) for m in resp.get("messages", [])]
+        return [m for m in msgs if m is not None]
+
+    def trash_expired(self, folder: str, older_than_days: int, limit: int,
+                      dry_run: bool = False) -> int:
+        """messages.trash (recoverable; Gmail empties Trash after 30 days) — within gmail.modify."""
+        if older_than_days <= 0 or limit <= 0:
+            return 0
+        if folder.upper() in ("INBOX", "TRASH"):
+            raise ValueError(f"refusing retention on {folder!r}")
+        svc = self._service()
+        resp = svc.users().messages().list(
+            userId="me", labelIds=[self._label_id(folder)], maxResults=min(limit, 500),
+            q=f"older_than:{older_than_days}d -is:starred").execute()
+        ids = [m["id"] for m in resp.get("messages", [])][:limit]
+        if not dry_run:
+            for gid in ids:
+                svc.users().messages().trash(userId="me", id=gid).execute()
+        return len(ids)
+
     def get_email(self, message_id: str) -> EmailMessage | None:
         svc = self._service()
         resp = svc.users().messages().list(
@@ -105,7 +133,9 @@ class GmailProvider(EmailProvider):
         ids = [m["id"] for m in resp.get("messages", [])]
         if not ids:
             raise LookupError(f"message not found: {message_id}")
-        remove = [self._label_id(self._root)] + (["UNREAD"] if mark_read else [])
+        labels = self._labels()
+        remove = [labels[n] for n in self._managed if n != dest_folder and n in labels]
+        remove += ["UNREAD"] if mark_read else []
         svc.users().messages().modify(userId="me", id=ids[0], body={
             "addLabelIds": [self._label_id(dest_folder)],
             "removeLabelIds": remove,
