@@ -9,7 +9,7 @@ Env: JOBRADAR_API_URL (in-cluster tracker-api), AGENT_INTERNAL_TOKEN, plus Langf
 creds + run caps. Per-user LLM/email creds come from /agent/cloud/config, NOT env.
 
     python scripts/run_cloud.py            # process all enabled users (real)
-    python scripts/run_cloud.py --dry-run  # classify + report, no moves/writes
+    python scripts/run_cloud.py --dry-run  # pick + verify + report; no mailbox changes or writes
 """
 
 import os

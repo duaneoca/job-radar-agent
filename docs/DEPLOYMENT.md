@@ -18,7 +18,7 @@ by you today and by a future self-hoster later.
 | Code | pipx venv (`~/.local/pipx/venvs/job-radar-agent`) | replaced on every `pipx upgrade` |
 | CLI binary | `~/.local/bin/job-radar-agent` | on your `PATH` |
 | **Secrets** | `~/Library/Application Support/JobRadarAgent/.env` (chmod 600) | **durable** — survives upgrades |
-| State (spend/lock) | `~/Library/Application Support/JobRadarAgent/data/` | durable |
+| State (spend, lock, dedup) | `~/Library/Application Support/JobRadarAgent/data/` | durable; `dedup.sqlite` remembers postings for `DEDUP_WINDOW_DAYS` |
 | Schedule | `~/Library/LaunchAgents/com.jobradar.emailagent.plist` | launchd job, every 15 min |
 | Logs | `~/Library/Logs/jobradar-emailagent.log` | |
 
@@ -29,13 +29,15 @@ by you today and by a future self-hoster later.
 - **Proton Mail Bridge** installed and **running**, logged into your account. Note its IMAP host/port
   (default `127.0.0.1:1143`) and the **Bridge-specific password** (Bridge → Settings → the account →
   IMAP/SMTP; this is NOT your Proton login password).
-- In your Proton mailbox, create the funnel folder + four sub-folders, e.g.:
-  `Hire Duane`, `Hire Duane/Interaction`, `Hire Duane/Postings`, `Hire Duane/Social`,
-  `Hire Duane/Unprocessed`. (Over IMAP, Proton namespaces these under `Folders/`, so the root is
-  `Folders/Hire Duane` — the doctor will confirm the exact names.)
+- In your Proton mailbox, create a root folder with two sub-folders, e.g. `Hire Duane/Postings` and
+  `Hire Duane/Unprocessed`. Over IMAP, Proton namespaces these under `Folders/`, so the root is
+  `Folders/Hire Duane` — `doctor` confirms the exact names.
+- A **mail filter** (Proton: Settings → Filters, a sieve rule) that files job-alert emails into
+  `Postings`. The agent only reads **unread** mail in that folder; it marks processed emails read and
+  moves anything it can't verify to `Unprocessed`.
 - A **Job Radar account**, and an **agent API key** minted in Settings → Email Agent (or via the API).
 - An **LLM API key** for your chosen provider (Anthropic / OpenAI / Google / Groq — BYOK).
-- **pipx**: `brew install pipx && pipx ensurepath` (restart your shell after).
+- **pipx** (`brew install pipx && pipx ensurepath`) or **uv** (`uv tool install …` works the same way).
 - *(optional)* Langfuse keys (tracing) and a Slack bot token + channel (notifications).
 
 ---
@@ -74,15 +76,21 @@ PROTON_IMAP_USER=you@proton.me
 PROTON_IMAP_PASSWORD=<bridge-specific-password>
 
 LLM_PROVIDER=anthropic
-LLM_MODEL=claude-haiku-4-5
-LLM_API_KEY=<your provider key>
+LLM_MODEL=claude-haiku-4-5        # a small, fast model is plenty — it only picks links from a list
+LLM_API_KEY=<your provider key>   # ideally a key used ONLY by this agent (avoids rate-limit contention)
 
 JOBRADAR_API_URL=https://job-radar.net/api
 AGENT_API_KEY=<from Job Radar → Settings → Email Agent — see §3.1>
 
-MAX_EMAILS_PER_RUN=25            # keeps each run ~2-3 min; drains a backlog over several runs
+MAX_EMAILS_PER_RUN=25            # ~2 s and ~$0.003 per email
 MAX_EMAIL_AGE_DAYS=14
 DAILY_SPEND_CEILING_USD=5.00     # 0 = disabled
+
+# who may send job alerts (subdomains match); leave EMPTY to accept any sender
+ALLOWED_SENDER_DOMAINS=linkedin.com,glassdoor.com,monster.com,indeed.com,dice.com,builtin.com,trueup.io,jobot.com,jobright.ai
+REQUIRE_SENDER_AUTH=true         # require a DMARC pass from Proton for the sender's domain
+ZERO_POSTINGS_ACTION=mark_read   # or: unprocessed
+DEDUP_WINDOW_DAYS=30
 
 # optional
 LANGFUSE_HOST=https://us.cloud.langfuse.com
@@ -149,15 +157,24 @@ scheduling.**
 
 ## 5. First real run (supervised), then schedule
 
-Do one **small, supervised** commit before handing it to launchd:
+First, a **dry run with a per-email report** (reads mail and calls the LLM, but marks, moves and
+writes nothing), run from a checkout of this repo:
+
+```bash
+cd ~ && AGENT_HOME="$HOME/Library/Application Support/JobRadarAgent" MAX_EMAILS_PER_RUN=10 \
+  /path/to/job-radar-agent/.venv/bin/python /path/to/job-radar-agent/scripts/run_local.py
+```
+
+Each line shows the outcome (`processed`, `duplicates_only`, `no_postings`, `needs_review`), how many
+postings would be written, and the attempts used. Then one **small, supervised** real run:
 
 ```bash
 AGENT_HOME="$HOME/Library/Application Support/JobRadarAgent" \
-  MAX_EMAILS_PER_RUN=5 job-radar-agent run --once         # real: moves 5 emails + writes + Slack
+  MAX_EMAILS_PER_RUN=5 job-radar-agent run --once
 ```
 
-Watch: 5 emails move to their sub-folders, rows appear in Job Radar, Slack pings (if configured).
-Use `--dry-run` first if you want a no-mutation preview.
+Watch: the 5 emails become read (they stay in `Postings`), rows appear in the Job Radar inbox, and
+anything unverifiable lands in `Unprocessed`.
 
 Then install the schedule:
 
@@ -230,9 +247,14 @@ pipx uninstall job-radar-agent
   `job-radar-agent models` for the exact ids; remember dashes-not-dots and no provider prefix
   (`claude-sonnet-4-6`, not `claude-sonnet-4.6` or `anthropic/…`). See §3.2.
 - **"Job Radar reachable" ✗** — check `JOBRADAR_API_URL` and that the agent key is valid/not revoked.
-- **A run takes a long time** — it's processing the unread backlog (up to `MAX_EMAILS_PER_RUN`). Lower
-  the cap; it drains over several runs. (A genuine network stall is bounded by built-in 30s IMAP /
-  60s LLM timeouts — a stuck run fails fast and releases the lock rather than hanging.)
+- **Run fails with `403 … Email agent disabled`** — the agent is switched off in Job Radar → Settings →
+  Email Agent. The run stops before reading mail or calling the LLM, so nothing is spent.
+- **Emails land in `Unprocessed` with "not on the allow-list" / "DMARC"** — a new job site (add its
+  domain to `ALLOWED_SENDER_DOMAINS`) or a spoofed sender (leave it there).
+- **Emails land in `Unprocessed` after 3 attempts** — the model's picks kept failing verification,
+  usually a new email layout. The Langfuse trace shows the link list and each attempt.
+- **A run takes a long time** — normally ~2 s per email. A stall is bounded by the 30 s IMAP and
+  `LLM_TIMEOUT_SECONDS` limits; a stuck run fails fast and releases the lock.
 - **Runs seem skipped** — overlapping runs are guarded by a lockfile; if a previous run is still going
   the next fire is skipped (by design). A crashed run's stale lock is auto-reclaimed next fire.
 - **Laptop asleep** — the agent only runs while the Mac is awake; missed runs just mean a slightly

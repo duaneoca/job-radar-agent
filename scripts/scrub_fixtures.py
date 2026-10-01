@@ -3,7 +3,7 @@ Best-effort scrubber: a real capture (tests/fixtures/real/*.json) → a CANDIDAT
 
 This is an ASSIST, not a guarantee. It redacts obvious PII (email addresses, the owner's name, long
 digit runs, tracking-id query params) and emits a candidate you MUST review by hand before moving it
-into tests/fixtures/synthetic/ and committing. Never commit straight from this tool.
+into tests/samples.py (synthetic HTML samples) and committing. Never commit straight from this tool.
 
 Usage:
     OWNER_NAME="Duane O" OWNER_EMAIL="duaneo@duanesworld.org" \

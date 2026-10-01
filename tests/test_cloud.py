@@ -27,6 +27,12 @@ class _FakeConfigClient:
         return self._configs[uid]
 
 
+def _stub(close=lambda: None):
+    return SimpleNamespace(reader=None, writer=None, llm=object(), policy=None, dedup=None,
+                           zero_postings_action="mark_read", user_notifier=FakeNotifier(),
+                           close=close)
+
+
 def _res(processed=1, escalations=0):
     return SimpleNamespace(emails_processed=processed, escalations=escalations,
                            status="success", errors=[])
@@ -67,8 +73,7 @@ def test_skips_disabled_and_processes_enabled(monkeypatch):
     # avoid building real providers/llm: stub build_user_components
     import agent.cloud as cloudmod
     monkeypatch.setattr(cloudmod, "build_user_components",
-                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(), critic_llm=object(),
-                                                        user_notifier=FakeNotifier(), close=lambda: None))
+                        lambda *a, **k: _stub())
     s = cloud_run(cc, base_url="https://x/api", internal_token="t", prompts=None,
                   run_once_fn=fake_run_once)
     assert s["users"] == 1                       # only u1 (enabled)
@@ -82,8 +87,7 @@ def test_per_user_isolation_and_creds_discarded(monkeypatch):
     closed = []
     import agent.cloud as cloudmod
     monkeypatch.setattr(cloudmod, "build_user_components",
-                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(), critic_llm=object(),
-                                                        user_notifier=FakeNotifier(), close=lambda: closed.append(1)))
+                        lambda *a, **k: _stub(close=lambda: closed.append(1)))
     s = cloud_run(cc, base_url="https://x/api", internal_token="t", prompts=None,
                   run_once_fn=lambda **kw: _res())
     assert s["users"] == 2
@@ -101,11 +105,10 @@ def test_circuit_breaker_stops_on_consecutive_failures(monkeypatch):
     assert len(cc.fetched) == 3                   # CIRCUIT_BREAK
 
 
-def test_build_user_components_uses_per_user_llm_for_classifier_AND_critic():
-    # Regression: a Gemini user must NOT get an Anthropic-default critic (the cloud bug).
+def test_build_user_components_uses_the_users_own_llm():
+    # Regression: a Gemini user must NOT get an Anthropic default (the V1 cloud bug).
     from agent.cloud import build_user_components
-    cfg = {"folders": {"root": "Hire Duane", "interaction": "Hire Duane/Interaction",
-                       "postings": "Hire Duane/Postings", "social": "Hire Duane/Social",
+    cfg = {"folders": {"root": "Hire Duane", "postings": "Hire Duane/Postings",
                        "unprocessed": "Hire Duane/Unprocessed"},
            "email_credentials": {"provider": "gmail", "refresh_token": "rt",
                                  "client_id": "c", "client_secret": "s"},
@@ -113,9 +116,32 @@ def test_build_user_components_uses_per_user_llm_for_classifier_AND_critic():
     comp = build_user_components(cfg, "u1", base_url="https://x/api", internal_token="t",
                                  since_days=14, limit=100)
     try:
-        assert comp.llm._model == "gemini/gemini-1.5-flash"
-        assert comp.critic_llm._model == "gemini/gemini-1.5-flash"   # NOT anthropic/claude-*
-        assert comp.llm._api_key == "k" and comp.critic_llm._api_key == "k"
+        assert comp.llm._model == "gemini/gemini-1.5-flash" and comp.llm._api_key == "k"
+    finally:
+        comp.close()
+
+
+def test_email_policy_comes_from_the_users_settings_with_safe_defaults():
+    from agent.cloud import build_user_components
+    base = {"folders": {"root": "R", "postings": "P", "unprocessed": "U"},
+            "email_credentials": {"provider": "gmail", "refresh_token": "rt"},
+            "llm": {"provider": "google", "preferred_model": "gemini/x", "api_key": "k"}}
+    comp = build_user_components(base, "u1", base_url="https://x/api", internal_token="t",
+                                 since_days=14, limit=10)
+    try:   # older Job Radar deploys send no email_policy → defaults
+        assert comp.policy.require_auth and "linkedin.com" in comp.policy.allowed_domains
+        assert comp.zero_postings_action == "mark_read"
+        assert type(comp.dedup).__name__ == "NullDedupStore"   # Job Radar enforces server-side
+    finally:
+        comp.close()
+    custom = {**base, "email_policy": {"allowed_sender_domains": ["Example.org"],
+                                       "require_sender_auth": False,
+                                       "zero_postings_action": "unprocessed"}}
+    comp = build_user_components(custom, "u2", base_url="https://x/api", internal_token="t",
+                                 since_days=14, limit=10)
+    try:
+        assert comp.policy.allowed_domains == ("example.org",) and not comp.policy.require_auth
+        assert comp.zero_postings_action == "unprocessed"
     finally:
         comp.close()
 
@@ -130,15 +156,15 @@ def test_full_label_joins_bare_leaf_and_is_idempotent():
 def test_build_user_components_joins_sublabels_under_root():
     from agent.cloud import build_user_components
     cfg = {"folders": {"root": "Hire Duane", "interaction": "Interaction", "postings": "Postings",
-                       "social": "Social", "unprocessed": "Unprocessed"},  # BARE leaves
+                       "social": "Social", "unprocessed": "Unprocessed"},  # BARE leaves (V1 shape still ok)
            "email_credentials": {"provider": "gmail", "refresh_token": "rt"},
            "llm": {"provider": "google", "preferred_model": "gemini/x", "api_key": "k"}}
     comp = build_user_components(cfg, "u1", base_url="https://x/api", internal_token="t",
                                  since_days=14, limit=100)
     try:
-        d = comp.reader._dest
-        assert d["postings"] == "Hire Duane/Postings"      # joined, not bare "Postings"
-        assert d["interaction"] == "Hire Duane/Interaction"
+        assert comp.reader._source == "Hire Duane/Postings"           # joined, not bare "Postings"
+        assert comp.reader._dest == {"unprocessed": "Hire Duane/Unprocessed"}   # the only move
+        assert comp.reader._p._root == "Hire Duane/Postings"          # Gmail removes this label on move
     finally:
         comp.close()
 
@@ -166,8 +192,7 @@ def test_total_email_budget_stops_run(monkeypatch):
     cc = _FakeConfigClient(users, {f"u{i}": _cfg() for i in range(5)})
     import agent.cloud as cloudmod
     monkeypatch.setattr(cloudmod, "build_user_components",
-                        lambda *a, **k: SimpleNamespace(reader=None, writer=None, llm=object(), critic_llm=object(),
-                                                        user_notifier=FakeNotifier(), close=lambda: None))
+                        lambda *a, **k: _stub())
     s = cloud_run(cc, base_url="https://x/api", internal_token="t", prompts=None,
                   max_total_emails=2, run_once_fn=lambda **kw: _res(processed=1))
     assert s["stopped"] and "budget" in s["stopped"]

@@ -1,9 +1,12 @@
 """
 Email Reader MCP configuration.
 
-Local self-host path reads everything from the environment (.env). The agent only ever processes
-UNREAD mail in the configured ROOT folder; subfolders are move destinations. Folder names are
+Local self-host path reads everything from the environment (.env). Folder names are
 user-configurable so this is portable across mailboxes. [D6/D7]
+
+V2: a mail filter (e.g. a Proton sieve rule) sorts job alerts into `<root>/Postings`. The agent reads
+UNREAD mail from that folder only (`Folders.source`) and moves problem mail to `<root>/Unprocessed`.
+The Interaction / Social names are kept for the folder layout but V2 does not use them.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ class Settings(BaseSettings):
 
     # First-run / backlog controls
     max_email_age_days: int = 14     # ignore unread mail older than this (0/negative ⇒ no cutoff)
-    max_emails_per_run: int = 100    # cap per run, newest-first
+    max_emails_per_run: int = 25     # cap per run, newest-first
 
     # Proton Bridge (local path)
     proton_imap_host: str = "host.docker.internal"
@@ -63,6 +66,15 @@ class Folders:
             social=f"{root}{sep}{s.email_folder_social}",
             unprocessed=f"{root}{sep}{s.email_folder_unprocessed}",
         )
+
+    @property
+    def source(self) -> str:
+        """The one folder V2 reads from."""
+        return self.postings
+
+    def v2_folders(self) -> list[str]:
+        """Folders V2 needs to exist."""
+        return [self.source, self.unprocessed]
 
     def all_subfolders(self) -> list[str]:
         return [self.interaction, self.postings, self.social, self.unprocessed]

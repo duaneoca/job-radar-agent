@@ -1,16 +1,12 @@
 """
-Local end-to-end runner — read real Proton mail → classify (real LLM) → write to Job Radar.
+Local end-to-end runner with a readable per-email report (the CLI `run --once` prints a summary only).
 
-DRY-RUN by default: classifies and prints what WOULD happen, but moves nothing and writes nothing.
-Pass --commit to actually move emails + write to Job Radar.
+DRY-RUN by default: extracts links, calls the LLM, verifies, and prints what WOULD happen — but marks
+nothing, moves nothing, writes nothing, and records no duplicate keys. Pass --commit to act.
 
-Env (from .env.smoke / .env):
-    PROTON_IMAP_* , EMAIL_ROOT_FOLDER, MAX_EMAIL_AGE_DAYS, MAX_EMAILS_PER_RUN   (email)
-    LLM_PROVIDER / LLM_MODEL / LLM_API_KEY                                       (BYOK)
-    JOBRADAR_API_URL / AGENT_API_KEY                                            (writer)
+Config comes from the same `.env` as the agent (see docs/DEPLOYMENT.md).
 
 Usage:
-    set -a; . ./.env.smoke; set +a
     python scripts/run_local.py            # dry run
     python scripts/run_local.py --commit   # for real
 """
@@ -20,76 +16,42 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.config import make_critic_llm, make_llm, make_notifier  # noqa: E402
-from agent.prompts import SeedPromptProvider                      # noqa: E402
-from agent.reader import ProviderReader                           # noqa: E402
-from agent.runner import run_once                                 # noqa: E402
-from agent.writer_rest import RestWriter                          # noqa: E402
-from mcp_email.config import folders, settings as email_settings  # noqa: E402
-from mcp_email.providers.proton import ProtonProvider             # noqa: E402
+from agent.bootstrap import build_components   # noqa: E402
+from agent.prompts import SeedPromptProvider   # noqa: E402
+from agent.runner import run_once              # noqa: E402
+from mcp_email.config import folders           # noqa: E402
 
 
 def main(argv) -> int:
     commit = "--commit" in argv
-    base = os.environ.get("JOBRADAR_API_URL", "https://staging.job-radar.net/api")
-    agent_key = os.environ.get("AGENT_API_KEY", "")
-    if not os.environ.get("LLM_API_KEY"):
-        print("✗ set LLM_API_KEY (and LLM_PROVIDER/LLM_MODEL)"); return 2
-    if not agent_key:
-        print("✗ set AGENT_API_KEY"); return 2
-
-    if email_settings.email_provider == "gmail":
-        from mcp_email.providers.gmail import GmailProvider
-        provider = GmailProvider(
-            token_file=email_settings.gmail_token_file,
-            credentials_file=email_settings.gmail_credentials_file,
-            root_folder=folders.root,
-        )
-    else:
-        provider = ProtonProvider(
-            email_settings.proton_imap_host, email_settings.proton_imap_port,
-            email_settings.proton_imap_user, email_settings.proton_imap_password,
-        )
-    reader = ProviderReader(
-        provider, root=folders.root,
-        dest_folders={"interaction": folders.interaction, "postings": folders.postings,
-                      "social": folders.social, "unprocessed": folders.unprocessed},
-        since_days=email_settings.max_email_age_days if email_settings.max_email_age_days > 0 else None,
-        limit=email_settings.max_emails_per_run,
-    )
-    writer = RestWriter(base, agent_key)
-
+    c = build_components()
     mode = "COMMIT" if commit else "DRY-RUN"
-    print(f"=== {mode} — {folders.root} → {base} (model {os.environ.get('LLM_MODEL')}) ===")
+    print(f"=== {mode} — reading {folders.source} → {c.inbox_base_url} ===")
     try:
-        from agent.budget import DailySpendStore
-        from agent.config import settings as agent_settings
         res = run_once(
-            reader=reader, writer=writer,
-            llm=make_llm(), critic_llm=make_critic_llm(),
-            prompts=SeedPromptProvider(), notifier=make_notifier(),
-            inbox_base_url=base.replace("/api", ""),
-            environment="local", dry_run=not commit,
-            spend_key="local", daily_ceiling=agent_settings.daily_spend_ceiling_usd,
-            spend_store=DailySpendStore(),
+            reader=c.reader, writer=c.writer, llm=c.llm, prompts=SeedPromptProvider(),
+            policy=c.policy, dedup=c.dedup, zero_postings_action=c.zero_postings_action,
+            notifier=c.notifier, inbox_base_url=c.inbox_base_url, environment="local",
+            dry_run=not commit, spend_key="local", daily_ceiling=c.daily_ceiling,
+            spend_store=c.spend_store,
         )
     finally:
-        provider.close()
-        writer.close()
+        c.close()
 
     if res.skipped:
-        print("• skipped (another run holds the lock)"); return 0
+        print("• skipped (another run holds the lock)")
+        return 0
     for d in res.details:
-        conf = f"{d['confidence']:.2f}" if d["confidence"] is not None else "—"
-        print(f"  [{d['outcome'] or 'ERR':12}] {d['category'] or '?':24} conf={conf}  "
-              f"{'→ '+d['destination'] if d['destination'] else '(no move)':14}  {d['subject']!r}")
-    print(f"\n{mode} summary: status={res.status} processed={res.emails_processed} "
-          f"postings={res.postings_created} interactions={res.interactions_recorded} "
-          f"escalations={res.escalations} retries={res.retries}")
+        print(f"  [{d['outcome'] or 'ERR':15}] postings={d['postings']:<3} dup={d['duplicates']:<3} "
+              f"tries={d['attempts']}  {d['subject']!r}" + (f"  ⚠ {d['reason']}" if d["reason"] else ""))
+    print(f"\n{mode} summary: status={res.status} emails={res.emails_processed} "
+          f"postings={res.postings_created} duplicates={res.duplicates_skipped} "
+          f"unprocessed={res.escalations} retries={res.retries} "
+          f"llm_cost=${getattr(c.llm, 'run_cost', 0.0):.4f}")
     for e in res.errors:
         print("  ! " + e)
     if not commit:
-        print("\n(nothing moved or written — re-run with --commit to act)")
+        print("\n(nothing marked, moved, or written — re-run with --commit to act)")
     return 0
 
 

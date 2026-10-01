@@ -1,5 +1,11 @@
 # Readiness — go-live checklist
 
+> **Agent V2 (2026-09):** the pipeline was replaced (link extraction + one LLM pick + deterministic
+> verification — `INTEGRATION_SPEC.md` §3.6). Verified on real mail in a dry run (10/10 emails,
+> $0.029, 18 s). Before inviting others: Job Radar Phase A/B (`dedup_key`, Email Policy UI), a live
+> cloud E2E, and re-enabling the agent in Job Radar settings. The checklist below is the **V1**
+> record (tag `v1-final`), kept for the infrastructure items that still apply.
+
 **What works today vs. what's required before inviting other users.** The local self-host path
 (Proton, single user) is built and tested end-to-end. The multi-user cloud path that *inviting
 others* depends on is largely not built yet.
@@ -24,10 +30,11 @@ Last updated: 2026-06-12.
 1. **Gmail provider** — ✅ IMPLEMENTED (Gmail API/OAuth, gmail.modify, labels-as-folders).
    Verified live END-TO-END on real labeled Gmail (read → classify → route, identical to Proton).
    (Was the #1 blocker — now cleared.)
-2. **Cloud runtime — partial.** ✅ Docker image + local interval scheduler (`run_loop`) built &
-   verified (image builds, container imports clean). STILL unbuilt: `McpWriter` (cloud writer over
-   MCP), multi-user runner (iterate users, per-user creds via `get_config`, fetch-per-user-discard),
-   and the k8s CronJob/Deployment. The agent has only run locally (not yet containerized in anger).
+2. **Cloud runtime — built, not yet live.** ✅ Docker image + multi-user runner (`agent/cloud.py` /
+   `scripts/run_cloud.py`: iterate users → per-user `get_config` → fetch-per-user-discard), both
+   **Gmail and generic IMAP** providers, daily spend ceiling + circuit breaker — built & unit-tested.
+   `McpWriter` is SHELVED (cloud writes via REST-internal, decision A). STILL pending: live multi-user
+   E2E on staging + the k8s CronJob/Deployment; the agent has only run locally so far.
 3. **No UI (JR-4).** No inbox page, ops dashboard, or Agent Keys page — others can't self-serve a
    key, connect email, or see results. Keys are currently minted headlessly.
 4. **Onboarding not wired.** Gmail OAuth connect, folder setup, `email_credentials` storage E2E.

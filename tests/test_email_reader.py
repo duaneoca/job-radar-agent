@@ -287,3 +287,53 @@ def test_imap_provider_reuses_proton_read_logic():
     p._conn = _FakeIMAP()
     msgs = p.get_unread("INBOX")
     assert msgs and msgs[0].message_id == "<m1@x>"
+
+
+# ── V2: ordered auth headers, raw HTML, mark-read in place ────
+
+class _AuthFakeIMAP(_FakeIMAP):
+    def __init__(self):
+        super().__init__()
+        self._raw = (
+            b"Authentication-Results: mail.protonmail.ch; dmarc=pass header.from=linkedin.com\r\n"
+            b"Authentication-Results: attacker.example; dmarc=pass header.from=linkedin.com\r\n"
+            b"Message-ID: <m1@x>\r\nFrom: LinkedIn <jobalerts-noreply@linkedin.com>\r\nSubject: hi\r\n"
+            b"MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n"
+            b"--b\r\nContent-Type: text/plain\r\n\r\nplain body\r\n"
+            b"--b\r\nContent-Type: text/html\r\n\r\n<a href=\"https://x.example/1\">Job</a>\r\n--b--\r\n"
+        )
+
+
+def test_fetch_keeps_every_auth_header_in_order_and_the_raw_html():
+    p = _provider_with_fake(_AuthFakeIMAP())
+    (m,) = p.get_unread("Folders/Hire Duane/Postings", limit=1)
+    assert m.auth_results[0].startswith("mail.protonmail.ch")      # top-most first
+    assert len(m.auth_results) == 2                                 # none dropped
+    assert '<a href="https://x.example/1">' in m.body_html
+
+
+def test_mark_read_sets_seen_without_moving():
+    fake = _FakeIMAP()
+    p = _provider_with_fake(fake)
+    p.mark_read("<m1@x>")
+    cmds = [c for c, _ in fake.commands]
+    assert "STORE" in cmds and "MOVE" not in cmds and "COPY" not in cmds
+
+
+def test_reader_passes_v2_fields_through():
+    from agent.reader import ProviderReader
+    p = _provider_with_fake(_AuthFakeIMAP())
+    r = ProviderReader(p, source="Folders/Hire Duane/Postings",
+                       dest_folders={"unprocessed": "Folders/Hire Duane/Unprocessed"}, limit=1)
+    (ref,) = r.get_unread()
+    assert ref["body_html"] and len(ref["auth_results"]) == 2
+
+
+def test_date_without_timezone_does_not_break_newest_first_sort():
+    class _MixedTZ(_DatedFakeIMAP):
+        def __init__(self):
+            super().__init__()
+            first = sorted(self._msgs)[0]
+            self._msgs[first] = self._msgs[first].replace(b" +0000", b"")   # naive Date header
+    msgs = _provider_with_fake(_MixedTZ()).get_unread("Folders/Hire Duane", since_days=14)
+    assert len(msgs) == 3 and all(m.received_at.tzinfo is not None for m in msgs)

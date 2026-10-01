@@ -7,7 +7,7 @@ test; set a wide window to capture variety:
 
 Output: one JSON per email under tests/fixtures/real/ (gitignored — real PII never reaches git).
 These are raw captures you eyeball + scrub (scripts/scrub_fixtures.py) into the committed,
-anonymized golden set under tests/fixtures/synthetic/. Do NOT commit anything from real/.
+anonymized golden set under tests/samples.py (synthetic HTML samples). Do NOT commit anything from real/.
 """
 
 import dataclasses
@@ -57,7 +57,7 @@ def main() -> int:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2, ensure_ascii=False)
     print(f"✓ wrote {len(msgs)} raw email(s) to {OUT_DIR} (gitignored)")
-    print("  Next: scrub the interesting ones into tests/fixtures/synthetic/ (PII-free, committed).")
+    print("  Next: scrub the interesting ones into tests/samples.py (synthetic HTML samples) (PII-free, committed).")
     return 0
 
 

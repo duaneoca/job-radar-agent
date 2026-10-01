@@ -1,46 +1,59 @@
 """
-Agent runtime config (local self-host path).
+Agent runtime config.
 
-The LOCAL agent reads its LLM provider/model/key from the environment (BYOK, owner's own key) — it
-does NOT call GET /agent/config (H6a). The CLOUD path instead fetches these from the config bundle;
-`llm_from_config_bundle` builds the same client from that dict.
+Dual design — every per-user policy has two sources:
+  • LOCAL agent → this module's `AgentSettings` (the `.env` file). It never calls /agent/config (H6a).
+  • CLOUD agent → the per-user bundle from `GET /agent/cloud/config/{user_id}`, set by the user in
+    Job Radar's Email Agent settings UI. The `*_from_config_bundle` helpers read it, falling back to
+    the same defaults when a field is absent (so older Job Radar deploys keep working).
 """
 
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .dedup import DedupStore, NullDedupStore, SqliteDedupStore
 from .llm import LLMClient
 from .llm_litellm import LiteLLMClient
+from .nodes import ZERO_POSTINGS_ACTIONS
 from .observability import get_langfuse
 from .paths import env_file
+from .senders import DEFAULT_ALLOWED_DOMAINS, DEFAULT_TRUSTED_AUTHSERV_IDS, SenderPolicy
 
 
 class AgentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=env_file(), extra="ignore")
 
     # Job Radar (writer)
-    jobradar_api_url: str = "https://staging.job-radar.net/api"
+    jobradar_api_url: str = "https://job-radar.net/api"
     agent_api_key: str = ""
 
     # Scheduling (local loop)
     poll_interval_seconds: int = 900
 
-    # LLM (BYOK) — local path
+    # LLM (BYOK) — the single link-picker call
     llm_provider: str = "anthropic"
-    llm_model: str = "claude-sonnet-4-6"
+    llm_model: str = "claude-haiku-4-5"
     llm_api_key: str = ""
-    # Optional cheaper model for the Critic; falls back to the main model if unset.
-    critic_model: str = ""
+    # Per-call timeout (s). A fast model answers in a few seconds; a stalled call should fail fast
+    # and be retried rather than burn the whole window × retries.
+    llm_timeout_seconds: float = 25.0
 
-    # Run controls (mirrored from the email reader for the runner)
-    max_emails_per_run: int = 100
+    # Sender policy (checked before any LLM call). Comma-separated; an EMPTY value allows all senders.
+    allowed_sender_domains: str = ",".join(DEFAULT_ALLOWED_DOMAINS)
+    require_sender_auth: bool = True
+    trusted_authserv_ids: str = ",".join(DEFAULT_TRUSTED_AUTHSERV_IDS)
+
+    # What to do with an email that contains no job postings: mark_read | unprocessed
+    zero_postings_action: str = "mark_read"
+
+    # Duplicate suppression window (days since a posting was last seen); 0 disables it.
+    dedup_window_days: int = 30
+
+    # Run controls
     daily_spend_ceiling_usd: float = 5.0
-    hitl_abandon_minutes: int = 30
 
-    # Observability (Langfuse) — optional; host defaults to US to match our project region.
-    # A blank/unset host makes the Langfuse SDK silently default to EU (cloud.langfuse.com),
-    # so we set it explicitly here and read keys from the same .env as everything else.
+    # Observability (Langfuse) — optional; host defaults to US (a blank host silently means EU).
     langfuse_host: str = "https://us.cloud.langfuse.com"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
@@ -60,17 +73,33 @@ class AgentSettings(BaseSettings):
 settings = AgentSettings()
 
 
+def _zero_action(value: str | None) -> str:
+    v = (value or "mark_read").strip().lower()
+    if v not in ZERO_POSTINGS_ACTIONS:
+        raise ValueError(f"ZERO_POSTINGS_ACTION must be one of {ZERO_POSTINGS_ACTIONS}, got {value!r}")
+    return v
+
+
+# ── local (.env) factories ────────────────────────────────────
 def make_llm(settings: AgentSettings = settings) -> LLMClient:
-    """Classifier LLM from local env (BYOK), Langfuse-traced when configured."""
+    """The link-picker LLM from local env (BYOK), Langfuse-traced when configured."""
     return LiteLLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key,
-                         langfuse=get_langfuse())
+                         langfuse=get_langfuse(), timeout=settings.llm_timeout_seconds)
 
 
-def make_critic_llm(settings: AgentSettings = settings) -> LLMClient:
-    """Critic LLM — same provider/key, optionally a cheaper model (D2/Q5)."""
-    model = settings.critic_model or settings.llm_model
-    return LiteLLMClient(settings.llm_provider, model, settings.llm_api_key,
-                         langfuse=get_langfuse())
+def make_sender_policy(settings: AgentSettings = settings) -> SenderPolicy:
+    return SenderPolicy.from_values(settings.allowed_sender_domains, settings.require_sender_auth,
+                                    settings.trusted_authserv_ids)
+
+
+def make_dedup_store(settings: AgentSettings = settings) -> DedupStore:
+    if settings.dedup_window_days <= 0:
+        return NullDedupStore()
+    return SqliteDedupStore(window_days=settings.dedup_window_days)
+
+
+def zero_postings_action(settings: AgentSettings = settings) -> str:
+    return _zero_action(settings.zero_postings_action)
 
 
 def make_notifier(settings: AgentSettings = settings):
@@ -92,16 +121,24 @@ def make_notifier(settings: AgentSettings = settings):
     return NullNotifier()
 
 
+# ── cloud (per-user config bundle) factories ──────────────────
 def llm_from_config_bundle(bundle: dict) -> LLMClient | None:
-    """
-    Build an LLM client from a GET /agent/config bundle (cloud path). None if no LLM key.
-    Used for BOTH the classifier and the critic — the per-user provider/model/key drives both
-    (D2/Q5), so the cloud critic must come from here, NOT make_critic_llm() (which reads LOCAL env).
-    Langfuse-traced when configured.
-    """
+    """The link-picker LLM from the user's own provider/model/key. None if no key."""
     llm = bundle.get("llm")
     if not llm or not llm.get("api_key"):
         return None
     return LiteLLMClient(llm.get("provider", "anthropic"),
                          llm.get("preferred_model") or llm.get("model", ""),
-                         llm["api_key"], langfuse=get_langfuse())
+                         llm["api_key"], langfuse=get_langfuse(),
+                         timeout=settings.llm_timeout_seconds)
+
+
+def policy_from_config_bundle(bundle: dict) -> SenderPolicy:
+    """`email_policy` block (INTEGRATION_SPEC §3.6); absent fields fall back to the defaults."""
+    p = bundle.get("email_policy") or {}
+    return SenderPolicy.from_values(p.get("allowed_sender_domains"), p.get("require_sender_auth"),
+                                    p.get("trusted_authserv_ids"))
+
+
+def zero_action_from_config_bundle(bundle: dict) -> str:
+    return _zero_action((bundle.get("email_policy") or {}).get("zero_postings_action"))

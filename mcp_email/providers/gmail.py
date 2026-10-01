@@ -111,13 +111,24 @@ class GmailProvider(EmailProvider):
             "removeLabelIds": remove,
         }).execute()
 
+    def mark_read(self, message_id: str) -> None:
+        svc = self._service()
+        resp = svc.users().messages().list(
+            userId="me", q=f"rfc822msgid:{message_id}", maxResults=1).execute()
+        ids = [m["id"] for m in resp.get("messages", [])]
+        if not ids:
+            raise LookupError(f"message not found: {message_id}")
+        svc.users().messages().modify(userId="me", id=ids[0],
+                                      body={"removeLabelIds": ["UNREAD"]}).execute()
+
     # ── parsing ───────────────────────────────────────────────
     def _fetch(self, gmail_id: str, folder: str) -> EmailMessage | None:
         msg = self._service().users().messages().get(
             userId="me", id=gmail_id, format="full").execute()
         payload = msg.get("payload", {})
-        headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
-        body, has_att = self._extract_body(payload)
+        header_list = payload.get("headers", [])
+        headers = {h["name"]: h["value"] for h in header_list}
+        body, html, has_att = self._extract_body(payload)
         received = None
         if msg.get("internalDate"):
             received = datetime.fromtimestamp(int(msg["internalDate"]) / 1000, tz=timezone.utc)
@@ -126,14 +137,19 @@ class GmailProvider(EmailProvider):
                 received = parsedate_to_datetime(headers["Date"])
             except (TypeError, ValueError):
                 received = None
+            if received is not None and received.tzinfo is None:
+                received = received.replace(tzinfo=timezone.utc)
         return EmailMessage(
             message_id=(headers.get("Message-ID") or headers.get("Message-Id") or "").strip(),
             native_id=gmail_id, folder=folder,
             subject=headers.get("Subject", ""), sender=headers.get("From", ""),
             received_at=received, body_text=body, has_attachments=has_att, headers=headers,
+            body_html=html or "",
+            auth_results=[h["value"] for h in header_list
+                          if h["name"].lower() == "authentication-results"],
         )
 
-    def _extract_body(self, payload: dict) -> tuple[str, bool]:
+    def _extract_body(self, payload: dict) -> tuple[str, str | None, bool]:
         """text/plain preferred; else stripped text/html. Attachments flagged, never fetched. [M1]"""
         plain: str | None = None
         html: str | None = None
@@ -155,4 +171,4 @@ class GmailProvider(EmailProvider):
                 walk(sub)
 
         walk(payload)
-        return _choose_text(plain, html), has_att
+        return _choose_text(plain, html), html, has_att

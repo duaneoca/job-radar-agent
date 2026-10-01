@@ -1,6 +1,7 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.2 (adds §3.5 recruiter-contact extraction + recruiter↔posting linkage)
+**Version:** 0.3 (agent V2: link-picker pipeline for job alerts — §3.6; `dedup_key` + per-user `email_policy`)
+**Previous:** 0.2 added §3.5 recruiter contacts (agent V1 only — see `v1-final` tag).
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
 
@@ -13,7 +14,7 @@
 
 | Component | Repo | Responsibility |
 |---|---|---|
-| LangGraph agent | job-radar-agent | Reads email, classifies, validates, decides actions |
+| LangGraph agent | job-radar-agent | **V2:** reads the Postings folder, extracts links, one LLM pick, deterministic verification, writes postings (§3.6) |
 | Email Reader MCP (Server 1) | job-radar-agent | Mailbox access (read / mark-read / move only) |
 | Notifiers + HITL poller | job-radar-agent | Slack/Telegram/Discord; resumes checkpoints from decisions |
 | Job Radar Writer MCP (Server 2) | job-radar | The agent's ONLY write path into Job Radar |
@@ -59,9 +60,9 @@ set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` o
 | subject | text | |
 | sender | text | |
 | received_at | timestamptz | |
-| category | enum | `recruiter_outreach \| application_confirmation \| job_alert \| network_notification` |
-| confidence | float | model-justified, NOT email-settable `[C1]` |
-| raw_extracted_json | jsonb | full LLM output. For `recruiter_outreach`, carries `recruiter_contact` (§3.5) — the Phase-1 home for the recruiter card until the typed `recruiter` field lands |
+| category | enum | `recruiter_outreach \| application_confirmation \| job_alert \| network_notification` — agent V2 sends only `job_alert` |
+| confidence | float | model-justified, NOT email-settable `[C1]`. V2 sends `1.0`: every posting passed deterministic verification |
+| raw_extracted_json | jsonb | server-only extraction record. V2 shape in §3.6 (no email content beyond verified titles/companies). V1 `recruiter_outreach` rows carried `recruiter_contact` (§3.5) |
 | validation_attempts | int | |
 | escalation_reason | text null | set when status = `needs_review` |
 | status | enum | `pending \| processed \| needs_review \| discarded` |
@@ -82,16 +83,17 @@ set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` o
 | matched_review_id | UUID null | FK → user_job_reviews if dup suspected |
 | import_status | enum | `pending \| imported \| dismissed` |
 | imported_review_id | UUID null | FK → user_job_reviews once user imports |
+| dedup_key | text null | **NEW (§3.6).** Stable posting identity from the agent. Phase A: nullable, stored. Phase B: partial UNIQUE `(user_id, dedup_key) WHERE dedup_key IS NOT NULL`; a conflicting posting is skipped, not an error |
 | created_at | timestamptz | |
 
-### 1.3 `inbox_interactions` — one row per application-status-update email
+### 1.3 `inbox_interactions` — one row per application-status-update email (agent V1 only; V2 does not write these)
 | col | type | notes |
 |---|---|---|
 | id | UUID PK | |
 | inbox_email_id | UUID FK | |
 | user_id | UUID FK | |
 | matched_review_id | UUID null | null ⇒ needs_review |
-| match_confidence | float | |
+| match_confidence | float **null** | null when there's no match (paired with `matched_review_id` null). MUST be nullable — the agent sends null for no-match interactions `[bugfix 2026-06-24]` |
 | previous_status | enum null | JobStatus |
 | new_status | enum null | JobStatus, agent-writable subset only |
 | applied_at | timestamptz null | when status written to the review |
@@ -240,7 +242,7 @@ user); both endpoints in-cluster-only (NetworkPolicy + nginx block, same posture
 | Method/Path | Returns | Notes |
 |---|---|---|
 | `GET /agent/cloud/users` | `[{user_id, provider, enabled}]` | **No secrets.** Enabled cloud users with stored creds. |
-| `GET /agent/cloud/config/{user_id}` | `{llm, folders, email_credentials}` | One user's decrypted config (same shape as `/agent/config`). |
+| `GET /agent/cloud/config/{user_id}` | `{llm, folders, email_credentials, email_policy?, slack?}` | One user's decrypted config (same shape as `/agent/config`). `email_policy` is optional (§3.6); absent ⇒ agent defaults. |
 
 **Split enumerate from fetch on purpose** `[H6]`: the runner loops `users` → fetches ONE
 `config/{user_id}` → processes → **discards that user's creds** → next. Never holds all users' secrets
@@ -280,7 +282,8 @@ A dedicated **Settings → Email Agent** page is the single per-user home for th
 |---|---|
 | **Agent key** — generate / revoke; show `key_hint` (last 4); plaintext shown once on create | `agent_api_keys` / `/agent/keys` |
 | **Email connection** — Gmail "Connect" (OAuth) or IMAP creds (cloud users); local self-host uses local `.env` | `email_credentials` `[C3/H5]` |
-| **Folder config** — root + subfolder names (Interaction/Postings/Social/Unprocessed) | folder layout `[D6]` |
+| **Folder config** — root + subfolder names. V2 reads **Postings** and moves problems to **Unprocessed** (Interaction/Social unused) | folder layout `[D6]` |
+| **Email policy (NEW, §3.6)** — allowed sender domains (list), require sender authentication (toggle, default on), what to do with emails that have no postings (mark read / move to Unprocessed) | `email_policy` in the cloud config |
 | **Notifications** — Slack/Telegram/Discord channel + connect | notifier config `[D16]` |
 | **Agent status & stats** — last run / health + the per-user business stats | `agent_runs` + `GET /agent/stats` `[D21/Q8]` |
 | **Enable / disable** — pause the agent for this user | (toggle) |
@@ -308,20 +311,23 @@ live here on the user's Email Agent page.
   "message_id": "<CA+...@mail.gmail.com>",
   "subject": "…", "sender": "recruiter@acme.com", "received_at": "2026-06-10T14:00:00Z",
   "category": "job_alert",
-  "confidence": 0.93,
+  "confidence": 1.0,
   "langfuse_trace_id": "trace_abc",
-  "raw_extracted_json": { ... },
-  "recruiter": { ... §3.5 object; OPTIONAL, recruiter_outreach only ... },
+  "raw_extracted_json": { ... §3.6 ... },
   "postings": [
     { "company": "Acme", "role": "FDE", "link": "https://…",
-      "action_required": true, "possible_duplicate": false, "matched_review_id": null }
-  ]
+      "action_required": false, "possible_duplicate": false, "matched_review_id": null,
+      "dedup_key": "linkedin:4457198691" }
+  ],
+  "truncated": false
 }
 ```
-Server: enforce ≤30 postings, http/https links only, dedup `(user_id, message_id)`. `recruiter` is
-optional (§3.5); when present it is the email-level recruiter for every posting above.
+Server: enforce ≤30 postings, http/https links only, dedup `(user_id, message_id)`. `received_at` is
+required — the agent substitutes the processing time when an email has no `Date` header.
+`dedup_key` (§3.6) and `truncated` are currently ignored by the server (no `extra="forbid"`), which is
+what makes the two-phase rollout safe. (V1 also sent an optional typed `recruiter` — §3.5.)
 
-### 3.2 `POST /agent/interactions`
+### 3.2 `POST /agent/interactions` (agent V1 only)
 ```json
 {
   "message_id": "<...>", "subject": "…", "sender": "talent@acme.com",
@@ -329,7 +335,7 @@ optional (§3.5); when present it is the email-level recruiter for every posting
   "category": "application_confirmation",
   "confidence": 0.88, "langfuse_trace_id": "trace_xyz",
   "matched_review_id": "uuid-or-null",
-  "match_confidence": 0.91,
+  "match_confidence": 0.91,                  // float OR null — null when matched_review_id is null (no match)
   "new_status": "interviewing",
   "timeline_note": "Interview scheduled (from email)"
 }
@@ -357,7 +363,7 @@ Server: if `matched_review_id` present AND `new_status` in the writable subset �
 }
 ```
 
-### 3.5 Recruiter contact (recruiter_outreach only) `[D22 extract / D23 linkage]`
+### 3.5 Recruiter contact (recruiter_outreach only; agent V1 only) `[D22 extract / D23 linkage]`
 
 Job Radar never receives the email body (content minimization), so the recruiter's name, phone,
 agency, LinkedIn, and the client they represent — all in the signature/body — are extractable ONLY by
@@ -423,6 +429,65 @@ change** (answers open-Q3: yes, run both at once).
   "is_agency": true, "represents": ["Acme Corp"], "recruiter_confidence": 0.9
 }
 ```
+
+---
+
+### 3.6 Agent V2 — job-alert link picker `[D24]`
+
+**Why:** V1 ran 2–5 full-body LLM calls per email (~$1/email, minutes per run). Mail is now sorted
+upstream by a mail filter (e.g. a Proton sieve rule), so the agent only needs to turn job-alert emails
+into postings. V2 costs ≈ $0.003/email with one small LLM call.
+
+**Pipeline (per email in the Postings folder):**
+1. **Screen (deterministic, before any LLM spend).** Sender domain must be on the allow-list, and the
+   receiving server's topmost trusted `Authentication-Results` must show `dmarc=pass` for that domain.
+   Failure ⇒ move to Unprocessed.
+2. **Extract (deterministic).** Every `<a href>` becomes a numbered candidate: link text, a
+   scheme-allowlisted URL, and nearby text bounded by the neighboring links.
+3. **Pick (one LLM call).** The model receives only the subject + the numbered list and returns
+   `[{link_id, title, company}]`. It never returns a URL.
+4. **Verify (deterministic).** `link_id` exists; `title` appears in that link's text/nearby text;
+   `company` appears in that link's nearby text and differs from the title. Duplicate picks collapse.
+5. **Retry.** Up to 3 attempts. Each retry sends only corrective instructions that reference our own
+   link numbers — never the model's wrong values. Still failing (even partially) ⇒ Unprocessed.
+6. **Write.** Postings not seen before (by `dedup_key`) go to `POST /agent/inbox`; the email is then
+   marked read and stays in Postings. All-duplicates ⇒ marked read, nothing written. No postings ⇒
+   `zero_postings_action`.
+
+**`raw_extracted_json` (V2):**
+```json
+{ "pipeline": "v2-link-picker", "attempts": 1, "links_considered": 22,
+  "postings": [{"link_id": 7, "title": "…", "company": "…"}], "duplicates_skipped": 0 }
+```
+
+**`dedup_key`** — the same posting re-sent in later emails gets the same key:
+`linkedin:<job id>` · `glassdoor:<jobListingId>` · `indeed:<jk>` · `url:<host+path>` (direct
+applicant-tracking-system links: Greenhouse, Lever, Ashby, Workday, …) · otherwise
+`ct:<company>|<title>` (normalized) for senders whose links are one-time tracking redirects.
+
+**Dual design — where state and policy live:**
+| Concern | Local agent (Proton) | Cloud agent |
+|---|---|---|
+| Sender allow-list / auth toggle / zero-postings action | `.env` (`ALLOWED_SENDER_DOMAINS`, `REQUIRE_SENDER_AUTH`, `ZERO_POSTINGS_ACTION`) | `email_policy` in the cloud config, set on the Email Agent settings page |
+| Duplicate memory | SQLite in `<AGENT_HOME>/data/dedup.sqlite` (30-day window from last sighting) | Job Radar DB: `inbox_postings.dedup_key` (Phase B unique) |
+
+**`email_policy` shape (cloud config, all fields optional):**
+```json
+{ "allowed_sender_domains": ["linkedin.com", "glassdoor.com"],
+  "require_sender_auth": true,
+  "zero_postings_action": "mark_read" }
+```
+Defaults when absent: the built-in job-board list, `true`, `mark_read`. `allowed_sender_domains: []`
+means *allow any sender*. Unknown `zero_postings_action` values fail the user's run loudly.
+
+**Two-phase rollout (nothing breaks mid-deploy):**
+| Phase | Side | Change | Safe because |
+|---|---|---|---|
+| 0 | agent | Send `dedup_key` + read optional `email_policy` | Job Radar ignores unknown fields today; agent defaults when `email_policy` is absent |
+| A | job-radar | Add nullable `inbox_postings.dedup_key` + accept it on `AgentPostingIn`; add Email Policy UI + `email_policy` in the cloud config | Nothing enforced yet |
+| B | job-radar | Partial unique index `(user_id, dedup_key)`; skip conflicting postings on insert (don't 4xx the whole email) | Agent already sends the key everywhere |
+
+Until Phase B ships, **cloud users get no cross-email duplicate suppression** (pods keep no state).
 
 ---
 

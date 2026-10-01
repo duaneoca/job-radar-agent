@@ -26,6 +26,14 @@ Any change to tables, endpoints, payloads, or auth is a PR against that file fir
   (per-user stats on settings page, global on admin page).
 - **JR-5 — deploy:** mcp-writer + agent CronJob manifests; retire the old `email-monitor` stub.
 
+## Agent V2 work items (spec §3.6) — two-phase
+- **Phase A:** add nullable `inbox_postings.dedup_key` and accept it on `AgentPostingIn`; add an
+  **Email policy** section to Settings → Email Agent (allowed sender domains, require sender
+  authentication, zero-postings action) and return it as `email_policy` in `/agent/cloud/config`.
+- **Phase B:** partial unique index `(user_id, dedup_key)`; skip conflicting postings on insert
+  instead of rejecting the email. Until then, cloud users get no cross-email duplicate suppression.
+- V2 no longer calls `/agent/interactions` or sends recruiter cards; keep those endpoints for now.
+
 ## Non-negotiable security obligations on job-radar (see spec §5)
 - `[C2]` URL scheme allowlist + output sanitization for all agent-derived fields (stored-XSS → account takeover).
 - `[H1]` Identity derived from API key; never trust `user_id` from the request; validate ownership of every id.

@@ -1,38 +1,41 @@
 """
-LangGraph state for processing a single email.
+LangGraph state for processing a single email (V2 link-picker pipeline).
 
-The graph processes one email per state (the top-level run fans out over unread mail). Keeping
-state single-email keeps the Langfuse trace and the HITL checkpoint scoped to one message.
+The graph processes one email per state (the runner fans out over unread mail), which keeps each
+Langfuse trace scoped to one message.
 
-Constants here encode hard-coded guardrails (NOT user-configurable):
-  CONFIDENCE_THRESHOLD, MAX_ATTEMPTS, MAX_POSTINGS_PER_EMAIL.
+Hard-coded guardrails (NOT user-configurable):
+  MAX_ATTEMPTS           — link-picker attempts before the email goes to Unprocessed
+  MAX_POSTINGS_PER_EMAIL — postings beyond this are truncated
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, Optional, TypedDict
 
-from .schemas import Classification, Critique
+from .extract import LinkCandidate
+from .schemas import LinkPicks
 
-CONFIDENCE_THRESHOLD = 0.75      # below this ⇒ treat as invalid, retry/escalate [design]
-MAX_ATTEMPTS = 2                 # classifier attempts before escalation [D3]
-MAX_POSTINGS_PER_EMAIL = 30      # truncate beyond this + log warning [D11]
+MAX_ATTEMPTS = 3
+MAX_POSTINGS_PER_EMAIL = 30
 
-# Logical move destinations exposed by the Email Reader MCP.
-Destination = Literal["interaction", "postings", "social", "unprocessed"]
+# The only move V2 makes. Successfully processed mail is marked read and stays where it is.
+Destination = Literal["unprocessed"]
 
 # Terminal disposition of an email after the graph runs.
-Outcome = Literal["processed", "needs_review", "discarded", "awaiting_hitl"]
+Outcome = Literal["processed", "no_postings", "duplicates_only", "needs_review"]
 
 
-class EmailRef(TypedDict):
-    """Metadata from the EmailReader — the source of truth for identity, never the LLM."""
+class EmailRef(TypedDict, total=False):
+    """Metadata + content from the mailbox — the source of truth, never the LLM."""
 
     message_id: str            # RFC 822 Message-ID — idempotency key [L1]
     subject: str
     sender: str
     received_at: Optional[str]
     body_text: str
+    body_html: str
+    auth_results: list[str]    # Authentication-Results headers, top-down
     has_attachments: bool
 
 
@@ -40,23 +43,25 @@ class AgentState(TypedDict, total=False):
     # input
     email: EmailRef
 
-    # classify ⇄ critic loop
+    # screening + extraction
+    candidates: list[LinkCandidate]
+
+    # pick ⇄ verify loop
     attempts: int
-    classification: Optional[Classification]
-    critique: Optional[Critique]
-    feedback: list[str]                 # accumulated critic issues fed back to the classifier
+    picks: Optional[LinkPicks]
+    issues: list[str]          # verifier findings from the latest attempt
+    feedback: list[str]        # corrective instructions for the next attempt (no model output)
+    verified: list[dict[str, Any]]
+    truncated: bool
 
-    # routing / outcome
-    destination: Optional[Destination]
+    # outcome
     outcome: Optional[Outcome]
-    escalation_reason: Optional[str]
-    inbox_email_id: Optional[str]       # returned by create_inbox_entry; for notification deep links
-    recruiter: Optional[dict[str, Any]] # recruiter card (recruiter_outreach only); cleaned dict [§3.5]
-
-    # HITL (ambiguous interaction match)
-    hitl_id: Optional[str]
-    hitl_candidates: list[dict[str, Any]]   # [{review_id, label}]
-    matched_review_id: Optional[str]
+    destination: Optional[Destination]
+    mark_read: bool
+    reason: Optional[str]      # why the email went to Unprocessed (safe to log: no model output)
+    inbox_email_id: Optional[str]
+    postings_written: int
+    duplicates_skipped: int
 
     # observability
     langfuse_trace_id: Optional[str]

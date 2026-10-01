@@ -26,6 +26,9 @@
 Every email is attacker-controlled input fed to Classifier + Critic. Injection can force
 misclassification, wrong folder routing, or a wrong status write on a real `UserJobReview`.
 The **Critic is not a defense** — it is the same injectable LLM reading the same hostile text.
+**Agent V2 (2026-09):** the critic is gone. The model sees only extracted link text, returns link
+numbers (never URLs), cannot write status changes, and every value it returns is checked
+deterministically against the email; senders are allow-listed and DMARC-checked before any LLM call.
 Injected `company`/`role` can steer an interaction to mutate a legitimate tracked job's status.
 
 **Mitigations (all required):**
@@ -112,6 +115,8 @@ ownership of every `review_id` / `hitl_id` / `inbox_id` at use time.
   in the admin channel.
 **Mitigations:** deliberately choose — redact/truncate email bodies before spans, OR document that
 Langfuse holds email content. Control admin-channel membership. Fix the README privacy claims.
+**Agent V2 (2026-09):** the LLM and Langfuse no longer receive email bodies — only the subject and the
+extracted link texts/nearby text (a few KB instead of up to 150 KB). Still disclosed, much smaller.
 
 ### H3 — Internal no-auth endpoints + flat cluster network
 **Phase:** JR-3, JR-5
