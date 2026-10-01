@@ -47,6 +47,14 @@ The optional sorter (Jev decision model) files root-folder mail and writes **Int
 - **Typed `recruiter` field** on `AgentInboxIn` (§3.5 Phase 2) — the agent already sends it.
 - **Cloud folders:** the sorter uses all five `folders` keys from `/agent/cloud/config`; make sure the
   Email Agent settings page lets users name Interaction and Social too.
+- **Jev key storage (required to run the sorter in cloud):** the Jev key is **system-wide** (one
+  TypeSafe account for all users; not BYOK, not per-user). Store it as `TYPESAFE_API_KEY` in the
+  existing **`email-agent-secrets`** Secret — the agent CronJob (`k8s/base/email-agent/cronjob.yaml`)
+  already loads that Secret via `envFrom`. Put the non-secret switches in the **`email-agent-config`**
+  ConfigMap: `SORTER_ENABLED=true` (and optionally `JEV_MODEL`, `SORTER_MIN_CONFIDENCE`,
+  `SORTER_MIN_MARGIN`, `BULK_RECRUITER_DOMAINS`). Per environment (staging and production), then run
+  `scripts/check-secret-backup.py` so the new key is in the secrets backup. It never goes in the DB,
+  the cloud config bundle, or the UI. Rotating it = update the Secret; the next CronJob run picks it up.
 
 ## Non-negotiable security obligations on job-radar (see spec §5)
 - `[C2]` URL scheme allowlist + output sanitization for all agent-derived fields (stored-XSS → account takeover).
