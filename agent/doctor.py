@@ -34,6 +34,20 @@ def run() -> int:
                   else folders.v2_folders())
         for f in needed:
             check(f"folder exists: {f}", f in all_folders)
+        from .config import make_retention_policy
+        retention = make_retention_policy()
+        if retention.enabled:
+            try:
+                trash = provider._trash_folder() if hasattr(provider, "_trash_folder") else "Gmail Trash"
+                n_old = {k: provider.trash_expired(getattr(folders, k), d, retention.max_per_run,
+                                                   dry_run=True)
+                         for k, d in retention.days.items() if d > 0}
+                check(f"retention → {trash}", True,
+                      f"days {retention.days}; would move now: {n_old}", critical=False)
+            except Exception as exc:
+                check("retention", False, f"{type(exc).__name__}: {exc}")
+        else:
+            check("retention", False, "off (RETENTION_*_DAYS=0)", critical=False)
         try:
             n = len(provider.get_unread(folders.source, since_days=E.max_email_age_days or None, limit=5))
             check(f"unread in {folders.source} (≤{E.max_email_age_days}d)", True, f"{n}+ found",

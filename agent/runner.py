@@ -3,8 +3,9 @@ Top-level runner — one pass: [sort the root folder] → the unread Postings fo
 
 Acquire lock → preflight → optional SORT stage (agent/sort_stage.py: Jev routes root-folder mail into
 Interaction / Postings / Social / Unprocessed) → fetch unread Postings (newest-first; age + count caps
-applied by the reader) → run the per-email graph with per-email error isolation → report a run record
-(ALWAYS, even on crash). Sorting first means mail it files into Postings is picked up in the same run.
+applied by the reader) → run the per-email graph with per-email error isolation → optional RETENTION
+sweep (agent/retention.py: expired Social/Postings mail → Trash) → report a run record (ALWAYS, even on
+crash). Sorting first means mail it files into Postings is picked up in the same run.
 
 Dry-run wraps the reader, writer and duplicate store so NOTHING changes — no mail marked or moved, no
 Job Radar writes, no duplicate keys recorded — while the LLM pick + verification still run.
@@ -40,6 +41,7 @@ class RunResult:
     interactions_recorded: int = 0          # Interaction mail written to the inbox by the sorter
     sorted: dict = field(default_factory=dict)          # sorter: destination folder → count
     sort_details: list[dict] = field(default_factory=list)
+    trashed: dict = field(default_factory=dict)          # retention: logical folder → count
     errors: list[str] = field(default_factory=list)
     skipped: bool = False                   # lock held
     details: list[dict] = field(default_factory=list)
@@ -129,6 +131,7 @@ def run_once(
     daily_ceiling: float | None = None,
     spend_store=None,
     sort_stage=None,
+    retention_stage=None,
 ) -> RunResult:
     from notifications import dispatch as _dispatch
     from notifications.base import NullNotifier
@@ -226,6 +229,13 @@ def run_once(
                 "attempts": final.get("attempts", 0),
                 "reason": final.get("reason"),
             })
+
+        if retention_stage is not None:
+            r = retention_stage.run(dry_run=dry_run)
+            result.trashed = r.trashed
+            if r.errors:
+                result.status = "partial"
+                result.errors.extend(r.errors)
 
         if enforce_budget and not dry_run:
             try:

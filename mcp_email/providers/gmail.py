@@ -3,8 +3,8 @@ Gmail provider — Gmail API via OAuth2 (cloud multi-user path; also usable loca
 
 Folders are Gmail LABELS. The root (e.g. "Hire Duane") and its nested subfolders
 ("Hire Duane/Interaction", …) are labels. "Move" = label swap: add the destination label, remove
-the root label, and remove UNREAD (mark read). We only ever call list/get/modify — never send or
-trash — so the no-send/no-delete guarantee is enforced in code (the H5 residual-scope risk).
+the root label, and remove UNREAD (mark read). We only ever call list/get/modify, plus `trash` from the
+retention sweep (recoverable; never `delete`, never send) — the H5 residual-scope risk.
 
 Scope: gmail.modify (minimum that supports messages.modify). Reads use format=full but never fetch
 attachment bodies. `message_id` = RFC 822 Message-ID header (stable); `native_id` = Gmail message id.
@@ -100,6 +100,23 @@ class GmailProvider(EmailProvider):
             userId="me", labelIds=[self._label_id(folder)], maxResults=limit).execute()
         msgs = [self._fetch(m["id"], folder) for m in resp.get("messages", [])]
         return [m for m in msgs if m is not None]
+
+    def trash_expired(self, folder: str, older_than_days: int, limit: int,
+                      dry_run: bool = False) -> int:
+        """messages.trash (recoverable; Gmail empties Trash after 30 days) — within gmail.modify."""
+        if older_than_days <= 0 or limit <= 0:
+            return 0
+        if folder.upper() in ("INBOX", "TRASH"):
+            raise ValueError(f"refusing retention on {folder!r}")
+        svc = self._service()
+        resp = svc.users().messages().list(
+            userId="me", labelIds=[self._label_id(folder)], maxResults=min(limit, 500),
+            q=f"older_than:{older_than_days}d -is:starred").execute()
+        ids = [m["id"] for m in resp.get("messages", [])][:limit]
+        if not dry_run:
+            for gid in ids:
+                svc.users().messages().trash(userId="me", id=gid).execute()
+        return len(ids)
 
     def get_email(self, message_id: str) -> EmailMessage | None:
         svc = self._service()
