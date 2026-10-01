@@ -1,7 +1,7 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.5 (mailbox retention: expired Social/Postings mail → Trash, per-user days — §3.8)
-**Previous:** 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
+**Version:** 0.6 (relay recruiters stay `recruiter_outreach`; Job Radar groups shared relays by person — §3.7)
+**Previous:** 0.5 mailbox retention (§3.8); 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
 
@@ -525,10 +525,12 @@ it names the role, not the sender); `is_agency` = Jev yes/no (≥ 0.75 / ≤ 0.2
 and typed `recruiter` (§3.5 phases).
 
 **Relay rule:** `/recruiters/suggestions` keys a recruiter by the card's email, else the sender
-address. A SHARED relay sender (e.g. `inmail-hit-reply@linkedin.com`) with no real address in the card would
-merge every such recruiter into one suggestion, so the agent files that mail as `network_notification`
-(the card is still stored). *Open for job-radar:* skip relay/no-reply senders in suggestions (or key
-them by name + linkedin_url); the agent can then send `recruiter_outreach` for them. Dice's relay
+address — except a SHARED relay sender (`linkedin.com`, `indeed.com`, `glassdoor.com`,
+`ziprecruiter.com`, or a `noreply`-style address), which Job Radar keys by the card's `linkedin_url`,
+else the name, and suggests with no email (job-radar #150). So relay mail stays `recruiter_outreach`.
+**Order matters:** the agent may only send `recruiter_outreach` for relays once Job Radar's grouping
+is live in that environment, or they merge into one suggestion. Job Radar's relay list MUST cover the
+agent's `RELAY_DOMAINS` (`agent/recruiter.py`). Dice's relay
 (`…@user.dice.com`) is per recruiter (replies reach them), so it is a usable key: the card takes the
 signature's address when present, else the relay address, and the mail stays `recruiter_outreach`.
 Dice job alerts ("IntelliSearch") are job alerts → Postings.

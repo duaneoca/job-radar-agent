@@ -20,9 +20,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .recruiter import RELAY_DOMAINS, build_card   # shared relays only (see recruiter.py)
-from .sorter import (DEFAULT_BULK_RECRUITER_DOMAINS, SortDecision, _on_domain, classify, decide,
-                     sender_domain)
+from .recruiter import build_card
+from .sorter import (DEFAULT_BULK_RECRUITER_DOMAINS, SortDecision, classify, decide)
 
 # Sorter category → Job Radar's EmailCategory enum (recruiter_outreach | application_confirmation |
 # job_alert | network_notification). Only Interaction mail is written, so job_alert never appears.
@@ -54,15 +53,12 @@ class SortResult:
 
 def jobradar_category(decision: SortDecision, email: dict, card: dict | None) -> str:
     """
-    Job Radar's /recruiters/suggestions keys a recruiter by the card's email, else the SENDER address.
-    A relay sender (LinkedIn InMail, …) with no real address in the card would merge every such
-    recruiter into one junk suggestion — so that mail is filed as a network message instead.
+    Job Radar's category for a sorter decision. Relay-sent recruiter mail (LinkedIn InMail, …) stays
+    `recruiter_outreach`: Job Radar groups shared relay senders by LinkedIn profile, else name, so
+    they no longer merge into one suggestion (job-radar #150, §3.7 relay rule). Before that, this
+    filed them as `network_notification`, which kept them out of recruiter suggestions entirely.
     """
-    cat = JOBRADAR_CATEGORY[decision.category]
-    if (cat == "recruiter_outreach" and not (card or {}).get("email")
-            and _on_domain(sender_domain(email.get("sender", "")), RELAY_DOMAINS)):
-        return "network_notification"
-    return cat
+    return JOBRADAR_CATEGORY[decision.category]
 
 
 def interaction_payload(email: dict, decision: SortDecision, card: dict | None) -> dict:

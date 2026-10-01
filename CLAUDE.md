@@ -139,8 +139,8 @@ screen ─┬─ sender rejected ───────────────�
 
 Sorter (2026-09-29): built on `feat/jev-sorter`, 205 offline tests; eval on 231 real sorted emails:
 97 % auto-routed, 95 % label agreement (remainder = intended label drift). Not yet run in commit mode.
-Open: job-radar should skip relay senders in `/recruiters/suggestions` (§3.7 relay rule); Proton
-Bridge can desync (Repair fixes it).
+Relay-sent recruiter mail is `recruiter_outreach` (job-radar #150 groups shared relays by person —
+§3.7 relay rule). Proton Bridge can desync (Repair fixes it).
 
 V2 built and verified on real mail (dry run, 10 emails: 10/10 verified first try, $0.029 total,
 18 s). ~150 offline tests. Open items: Job Radar Phase A/B for `dedup_key` + `email_policy` UI
