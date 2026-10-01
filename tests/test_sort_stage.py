@@ -98,14 +98,16 @@ def test_configured_bulk_channel_goes_to_postings():
     assert reader.moves == [("<d>", "postings", False)] and w.inbox_entries == []
 
 
-def test_relay_recruiter_without_real_address_is_not_a_recruiter_suggestion():
+def test_relay_recruiter_without_real_address_is_still_a_recruiter():
     stage, _ = _stage([_email("<i>", "inmail", sender='"Kyle Stock" <inmail-hit-reply@linkedin.com>')])
     w = FakeWriter()
     stage.run(w)
     (p,) = w.inbox_entries
-    # would otherwise merge every InMail sender into one junk suggestion keyed by the relay address
-    assert p["category"] == "network_notification"
+    # Job Radar groups shared relay senders by person (job-radar #150), so InMail recruiters reach
+    # suggestions instead of being filed as network messages; the card carries no relay address.
+    assert p["category"] == "recruiter_outreach"
     assert p["raw_extracted_json"]["recruiter_contact"]["name"] == "Kyle Stock"
+    assert "email" not in p["raw_extracted_json"]["recruiter_contact"]
 
 
 def test_dry_run_neither_writes_nor_moves():

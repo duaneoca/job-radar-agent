@@ -1,7 +1,7 @@
 # Agent Integration — Job Radar side
 
-> **This file is destined for the `job-radar` repo** (copy to `job-radar/docs/agent-integration.md`
-> and reference it from job-radar's `CLAUDE.md`). It is the job-radar-facing pointer to the contract.
+> The Job Radar-facing summary of the contract. It lives **only here** — job-radar's `CLAUDE.md`
+> points at `INTEGRATION_SPEC.md` rather than keeping a copy that would drift.
 
 ## What this is
 The **Job Radar Email Agent** (repo: `../job-radar-agent`) is an external agentic pipeline that reads
@@ -40,11 +40,12 @@ The optional sorter (Jev decision model) files root-folder mail and writes **Int
 `network_notification`), plus a §3.5 recruiter card for recruiter outreach. Works with today's API.
 - **Inbox:** zero-posting rows already render ("No postings or status updates extracted"); consider
   showing the recruiter card on the row, and hiding the "import" hint when there are no postings.
-- **Recruiter suggestions (recommended):** `/recruiters/suggestions` keys by card email, else sender.
-  Skip shared relay / no-reply senders (`*@linkedin.com`, `*@indeed.com`, `noreply`/`no-reply`) or key
-  them by name + `linkedin_url`. Until then the agent files LinkedIn InMail recruiters as
-  `network_notification` so they don't merge into one suggestion.
-- **Typed `recruiter` field** on `AgentInboxIn` (§3.5 Phase 2) — the agent already sends it.
+- **Recruiter suggestions** — DONE (job-radar #150): shared relay / no-reply senders are keyed by
+  `linkedin_url`, else name, with no email; relay recruiter mail is now sent as `recruiter_outreach`.
+  Keep job-radar's relay list in step with the agent's `RELAY_DOMAINS`.
+- **Typed `recruiter` field** on `AgentInboxIn` (§3.5 Phase 2) — DONE (job-radar #150): stored at
+  `raw_extracted_json.recruiter_contact`, wins over the nested copy; a malformed card is dropped,
+  never the email.
 - **Cloud folders:** the sorter uses all five `folders` keys from `/agent/cloud/config`; make sure the
   Email Agent settings page lets users name Interaction and Social too.
 - **Jev key storage (required to run the sorter in cloud):** the Jev key is **system-wide** (one
