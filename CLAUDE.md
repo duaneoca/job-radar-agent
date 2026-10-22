@@ -50,13 +50,15 @@ tests/              synthetic samples only (tests/samples.py) — real emails ar
 
 ```
 unread in ROOT → Jev category → folder-summed prob ≥ min & margin ok? ─ no → Unprocessed (read)
-   ├─ interaction  → POST /agent/inbox (no postings; card if recruiter_outreach) → move (unread)
+   ├─ interaction  → POST /agent/inbox (card + the pitched role as ONE posting if
+   │                 recruiter_outreach, from the same Jev call; dedup-skipped if re-sent) → move (unread)
    ├─ postings     → move (unread — the link picker below takes it this run); optional
    │                 BULK_RECRUITER_DOMAINS land here by SENDER rule, never by Jev
    └─ social       → move (read)
 ```
 
-- Jev never produces text: categories are ours, card values are copied from the email.
+- Jev never produces text: categories are ours, card values are copied from the email, and the
+  pitched role / hiring company are PICKED from subject + body-head fragments (agent/recruiter.py).
 - A move that can't find the message (stale Bridge view) is `gone`, not an error.
 - Tune category descriptions with `scripts/eval_sorter.py`, not by guessing.
 

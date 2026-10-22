@@ -3,8 +3,10 @@ Sort stage — runs BEFORE the postings stage, inside the same lock / preflight 
 
 For each unread email in the ROOT folder (newest-first, age + count caps from the reader):
   1. Jev classifies it (agent/sorter.py) → a destination folder or Unprocessed.
-  2. Interaction mail is written to Job Radar's inbox first (`POST /agent/inbox`, no postings), with a
-     recruiter card for `recruiter_outreach` (agent/recruiter.py → /recruiters/suggestions).
+  2. Interaction mail is written to Job Radar's inbox first (`POST /agent/inbox`). For
+     `recruiter_outreach` that write carries the recruiter card (agent/recruiter.py →
+     /recruiters/suggestions) and the ONE role the recruiter is pitching as a posting, from the same
+     Jev call — skipped when the dedup store has seen that role already (recruiters re-send).
   3. Then the ONE mailbox mutation: move it (Interaction + Postings stay unread; Social + Unprocessed
      are marked read).
 
@@ -20,7 +22,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .recruiter import build_card
+from . import matching
+from .dedup import NullDedupStore, dedup_key
+from .recruiter import build_card_and_posting
 from .sorter import (DEFAULT_BULK_RECRUITER_DOMAINS, SortDecision, classify, decide)
 
 # Sorter category → Job Radar's EmailCategory enum (recruiter_outreach | application_confirmation |
@@ -45,6 +49,8 @@ class SortResult:
     moved: Counter = field(default_factory=Counter)    # destination folder → count
     inbox_written: int = 0                              # Interaction rows sent to Job Radar
     recruiter_cards: int = 0
+    postings: int = 0                                   # pitched roles written with recruiter mail
+    duplicates_skipped: int = 0                         # pitched roles the dedup store had seen
     gone: int = 0                                       # already moved by someone else (stale view)
     errors: list[str] = field(default_factory=list)
     details: list[dict] = field(default_factory=list)
@@ -61,7 +67,8 @@ def jobradar_category(decision: SortDecision, email: dict, card: dict | None) ->
     return JOBRADAR_CATEGORY[decision.category]
 
 
-def interaction_payload(email: dict, decision: SortDecision, card: dict | None) -> dict:
+def interaction_payload(email: dict, decision: SortDecision, card: dict | None,
+                        posting: dict | None = None) -> dict:
     raw: dict = {"sorter": {"model": "jev", "category": decision.category,
                             "folder_confidence": round(decision.confidence, 4)}}
     payload = {
@@ -78,17 +85,36 @@ def interaction_payload(email: dict, decision: SortDecision, card: dict | None) 
     if card:
         raw["recruiter_contact"] = card     # §3.5 Phase 1 (what /recruiters/suggestions reads)
         payload["recruiter"] = card         # §3.5 Phase 2 (typed; ignored until Job Radar adopts it)
+    if posting:
+        payload["postings"] = [posting]
+        raw["recruiter_posting"] = {"role": posting["role"], "company": posting["company"]}
     return payload
 
 
 class SortStage:
-    def __init__(self, reader, jev, config: SortConfig = SortConfig()):
+    def __init__(self, reader, jev, config: SortConfig = SortConfig(), dedup=None):
         self.reader = reader          # EmailReaderClient over the ROOT folder, 4 destinations
         self.jev = jev
         self.config = config
+        self.dedup = dedup or NullDedupStore()   # shared with the link picker locally
+
+    def _posting_for(self, posting: dict | None, writer, reviews_cache: list, res: "SortResult"):
+        """Dedup and duplicate-match a pitched role; None when the store has seen it."""
+        if not posting:
+            return None, None
+        key = dedup_key(posting.get("link") or "", posting["company"], posting["role"])
+        if self.dedup.seen(key):
+            res.duplicates_skipped += 1
+            return None, None
+        if not reviews_cache:
+            reviews_cache.append(writer.get_reviews())
+        m = matching.match(posting["company"], posting["role"], reviews_cache[0])
+        return {**posting, "possible_duplicate": m.best is not None,
+                "matched_review_id": (m.best or {}).get("review_id"), "dedup_key": key}, key
 
     def run(self, writer, *, dry_run: bool = False, over_budget=lambda: False) -> SortResult:
         res = SortResult()
+        reviews_cache: list = []        # one GET /agent/reviews per run, and only if needed
         for email in self.reader.get_unread():
             if over_budget():
                 res.halted = "daily spend ceiling reached mid-sort"
@@ -98,15 +124,19 @@ class SortStage:
                 d = decide(classify(self.jev, email), email.get("sender", ""),
                            min_confidence=self.config.min_confidence,
                            min_margin=self.config.min_margin, bulk_domains=self.config.bulk_domains)
-                card = None
+                card = posting = key = None
                 if d.folder == "interaction":
                     if d.category == "recruiter_outreach":
-                        card = build_card(self.jev, email)
-                    payload = interaction_payload(email, d, card)
+                        card, pitched = build_card_and_posting(self.jev, email)
+                        posting, key = self._posting_for(pitched, writer, reviews_cache, res)
+                    payload = interaction_payload(email, d, card, posting)
                     if not dry_run:
                         writer.create_inbox_entry(payload)
+                        if key:
+                            self.dedup.add([key])    # only once Job Radar accepted the write
                     res.inbox_written += 1
                     res.recruiter_cards += bool(card)
+                    res.postings += bool(posting)
                 if not dry_run:
                     try:
                         self.reader.move_and_mark(mid, d.folder, mark_read=d.mark_read)
@@ -119,6 +149,7 @@ class SortStage:
                     "sender": (email.get("sender") or "")[:60], "category": d.category,
                     "folder": d.folder, "confidence": round(d.confidence, 2), "rule": d.rule,
                     "reason": d.reason, "card": card,
+                    "posting": posting["role"] if posting else None,
                 })
             except Exception as exc:   # one poison email must not stop the stage [L3]
                 res.errors.append(f"sort {mid}: {type(exc).__name__}: {exc}")

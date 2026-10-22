@@ -124,14 +124,15 @@ def sort_config(settings: AgentSettings = settings):
                       bulk_domains=bulk_recruiter_domains(settings))
 
 
-def make_sort_stage(reader, settings: AgentSettings = settings):
-    """The sort stage over `reader` (the ROOT folder), or None when the sorter is disabled."""
+def make_sort_stage(reader, settings: AgentSettings = settings, dedup=None):
+    """The sort stage over `reader` (the ROOT folder), or None when the sorter is disabled.
+    `dedup` is the link picker's store, so a role a recruiter re-sends is written once."""
     if not settings.sorter_enabled:
         return None
     if not settings.typesafe_api_key:
         raise SystemExit("✗ SORTER_ENABLED=true but TYPESAFE_API_KEY is not set")
     from .sort_stage import SortStage
-    return SortStage(reader, make_jev(settings), sort_config(settings))
+    return SortStage(reader, make_jev(settings), sort_config(settings), dedup=dedup)
 
 
 def make_retention_policy(settings: AgentSettings = settings):
