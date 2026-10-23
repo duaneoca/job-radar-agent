@@ -96,8 +96,9 @@ def test_card_and_posting_come_from_one_jev_call():
     assert state["body_head"].startswith("Hi Duane")
     assert card["name"] == "Sonali Example" and card["employer"] == "Nityo Infotech Corp."
     assert card["is_agency"] is True
-    assert posting == {"company": "Acme Robotics", "role": "Forward Deployed Engineer",
-                       "link": "https://www.dice.com/jobs/detail/abc123", "action_required": False}
+    assert {k: posting[k] for k in ("company", "role", "link", "action_required")} == {
+        "company": "Acme Robotics", "role": "Forward Deployed Engineer",
+        "link": "https://www.dice.com/jobs/detail/abc123", "action_required": False}
 
 
 def test_unnamed_client_falls_back_to_the_agency_marked_as_such():
@@ -219,3 +220,70 @@ def test_no_pitch_means_the_old_shape():
     _stage(FakeJev({"category": "recruiter_outreach"})).run(writer)
     entry = writer.inbox_entries[0]
     assert entry["postings"] == [] and "recruiter_posting" not in entry["raw_extracted_json"]
+
+
+# ── job details (location, remote, pay, description) ─────────
+
+PITCH = """Hi Duane,
+
+Role: Sr. Agentic AI Engineer
+Location: Santa Clara, CA (3 days on-site/week)
+Duration: 12 months contract, C2C
+Rate: $70-80/hr
+
+Responsibilities:
+- Build LangGraph agents
+- Own the evals
+
+Thanks,
+Amrita Example
+Technical Recruiter | Example Staffing Inc
+
+On Mon, Oct 20, 2026 at 9:00 AM Someone <s@x.com> wrote:
+> earlier thread, Rate: $40/hr
+"""
+
+
+def _pitch_email():
+    return _email(subject="Urgent Requirement : Sr. Agentic AI Engineer--Santa Clara, CA--Contract",
+                  body=PITCH, sender="Amrita Example <amrita@examplestaffing.com>")
+
+
+def test_details_come_with_the_posting():
+    jev = FakeJev({"job_title": "Sr. Agentic AI Engineer", "job_location": "Santa Clara, CA",
+                   "hiring_company": "none", "employer": "Example Staffing Inc", "title": "Technical Recruiter"})
+    _, p = build_card_and_posting(jev, _pitch_email())
+    assert p["location"] == "Santa Clara, CA"
+    assert p["remote"] is False
+    assert (p["salary_min"], p["salary_max"]) == (70 * 2080, 80 * 2080)
+    head, _, rest = p["description"].partition("\n\n")
+    assert head == "Contract (C2C) · On-site · $70–80/hr (≈ $145,600–166,400/yr at 40 h/week)"
+    assert rest.startswith("Hi Duane") and "Build LangGraph agents" in rest
+    assert "earlier thread" not in p["description"] and "$40/hr" not in p["description"]
+    assert p["company"] == "Example Staffing Inc (agency)"
+
+
+def test_jev_sees_the_location_question():
+    jev = FakeJev({"job_title": "Sr. Agentic AI Engineer"})
+    build_card_and_posting(jev, _pitch_email())
+    assert "job_location" in jev.calls[0][1]
+
+
+def test_remote_role_has_no_city_and_remote_true():
+    jev = FakeJev({"job_title": "Forward Deployed Engineer", "job_location": "none"})
+    _, p = build_card_and_posting(jev, _email(subject="Forward Deployed Engineer | 100% Remote", body="Hi\nFully remote role.\n"))
+    assert p["remote"] is True and "location" not in p
+    assert p["description"].startswith("Remote\n\n")
+
+
+def test_no_pay_no_salary_fields():
+    jev = FakeJev({"job_title": "Forward Deployed Engineer"})
+    _, p = build_card_and_posting(jev, _email())
+    assert "salary_min" not in p and "salary_max" not in p
+
+
+def test_description_is_capped():
+    from agent.recruiter import DESCRIPTION_CAP
+    jev = FakeJev({"job_title": "Forward Deployed Engineer"})
+    _, p = build_card_and_posting(jev, _email(body="Forward Deployed Engineer\n" + "x" * 50_000))
+    assert len(p["description"]) <= DESCRIPTION_CAP

@@ -383,6 +383,22 @@ hiring company when named, else the agency with an "(agency)" suffix, else "Unkn
 `matched_review_id` work as for alert postings (§3.6); `raw_extracted_json.recruiter_posting`
 records the picks. A re-sent pitch the dedup store has seen is not written again.
 
+**Job details on a recruiter posting** (all optional; Job Radar pre-fills Add Job from them):
+
+| field | type | notes |
+|---|---|---|
+| `location` | string ≤200 | Jev's pick from the subject/body-head fragments; omitted for "Remote" |
+| `remote` | bool | `true` only when the pitch says remote and not hybrid/on-site |
+| `salary_min` / `salary_max` | int | annual USD, parsed by code (`agent/pay.py`); an **hourly rate is annualized at 40 h × 52 = 2,080 h** (user's decision 2026-10-23 — no hourly field) |
+| `description` | string ≤12,000 | one summary line (employment type · work mode · the rate as quoted, with its annual equivalent), then the newest message's text, quoted history cut |
+
+**Content-minimization exception (user's decision, 2026-10-23).** §3.5 above keeps email body
+text out of Job Radar. A recruiter posting's `description` is the one deliberate exception: the
+pitch *is* the job description, and the user wants Add Job pre-filled with it. It is the newest
+message only (no quoted thread), capped, sent only for `recruiter_outreach` postings, stored on
+the posting row, and returned by Job Radar only from the single-posting endpoint the Add Job page
+reads — never in inbox lists.
+
 **Object** (all optional except `name`; **OMIT** unknown fields — never empty strings or guesses;
 **plain strings only — NO markup, NO raw body / free-text snippets**):
 

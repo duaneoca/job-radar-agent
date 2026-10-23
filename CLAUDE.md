@@ -51,7 +51,8 @@ tests/              synthetic samples only (tests/samples.py) — real emails ar
 ```
 unread in ROOT → Jev category → folder-summed prob ≥ min & margin ok? ─ no → Unprocessed (read)
    ├─ interaction  → POST /agent/inbox (card + the pitched role as ONE posting if
-   │                 recruiter_outreach, from the same Jev call; dedup-skipped if re-sent) → move (unread)
+   │                 recruiter_outreach, from the same Jev call; dedup-skipped if re-sent;
+   │                 with location/remote/annual pay/description — agent/pay.py, spec §3.5) → move
    ├─ postings     → move (unread — the link picker below takes it this run); optional
    │                 BULK_RECRUITER_DOMAINS land here by SENDER rule, never by Jev
    └─ social       → move (read)

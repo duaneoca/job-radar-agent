@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 
 from .extract import extract_links
 from .jev import JevError, choice, noul
+from .pay import employment_type, parse_pay, work_mode
 from .sorter import _REPLY_MARKERS, _on_domain, sender_domain
 
 # Sender domains that relay mail through ONE shared address — it is not the recruiter's, and it would
@@ -47,9 +48,10 @@ FREE_MAIL = ("gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "aol.com", 
              "proton.me", "protonmail.com")
 
 CAPS = {"name": 200, "email": 255, "phone": 50, "employer": 200, "title": 200, "linkedin_url": 500,
-        "role": 200, "company": 200}
+        "role": 200, "company": 200, "location": 200}
 SIGNATURE_LINES = 15          # non-empty lines at the end of the newest message
 HEAD_LINES = 8                # first non-empty lines of the newest message: where the pitch is
+DESCRIPTION_CAP = 12_000      # chars of the newest message sent as the posting's description
 MAX_FRAGMENTS = 24
 PICK_MIN = 0.6                # a title/employer pick below this probability is omitted
 AGENCY_TRUE, AGENCY_FALSE = 0.75, 0.25
@@ -135,6 +137,20 @@ def head_lines(body_text: str) -> list[str]:
     lines = [ln.strip() for ln in text.splitlines()
              if ln.strip() and not ln.lstrip().startswith(">")]
     return lines[:HEAD_LINES]
+
+
+def newest_message(body_text: str) -> str:
+    """The newest message's text, line breaks kept — quoted history cut, capped. This is the
+    posting's description: the recruiter's pitch IS the job description (spec §3.5: the one
+    place email body text crosses to Job Radar, by the user's decision 2026-10-23)."""
+    text = body_text or ""
+    m = _REPLY_MARKERS.search(text)
+    if m:
+        text = text[:m.start()]
+    text = re.sub(r"&nbsp;?", " ", html.unescape(text), flags=re.I)
+    lines = [ln.rstrip() for ln in text.splitlines() if not ln.lstrip().startswith(">")]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return text[:DESCRIPTION_CAP]
 
 
 def head_fragments(subject: str, lines: list[str], name: str | None) -> list[str]:
@@ -247,6 +263,10 @@ def build_card_and_posting(jev, email: dict) -> tuple[dict | None, dict | None]:
             "Which fragment names the company the job is AT — the employer, not the sender's own "
             "staffing agency? Answer 'none' if the hiring company is not named.",
             {**head_options, "none": "The hiring company is not named."})
+        questions["job_location"] = choice(
+            "Which fragment is where the job is located — a city, state or country? Answer 'none' "
+            "if no fragment names the job's location.",
+            {**head_options, "none": "No fragment names where the job is."})
 
     if not questions:
         return card, None
@@ -290,4 +310,26 @@ def build_card_and_posting(jev, email: dict) -> tuple[dict | None, dict | None]:
         company = employer or "Unknown company"
     posting = {"company": _cap("company", company), "role": _cap("role", role),
                "link": pick_link(email), "action_required": False}
+    posting.update(job_details(email, role, _pick(answers.get("job_location"), head_frags, prefix="h")))
     return card, posting
+
+
+def job_details(email: dict, role: str, location: str | None) -> dict:
+    """Location / remote / annual pay / description for the pitched role. Pay, employment type and
+    work mode are parsed by code (agent/pay.py); location is Jev's pick. The description opens
+    with a one-line summary, so an annualized hourly rate is never mistaken for the quoted one."""
+    newest = newest_message(email.get("body_text") or "")
+    text = f"{email.get('subject') or ''}\n{newest}"
+    pay = parse_pay(text)
+    mode = work_mode(text)
+    out: dict = {}
+    if location and location.lower() != role.lower() and not re.fullmatch(r"(?i)remote", location):
+        out["location"] = _cap("location", location)
+    out["remote"] = mode == "Remote"
+    if pay:
+        out["salary_min"], out["salary_max"] = pay.salary_min, pay.salary_max
+    header = " · ".join(x for x in (employment_type(text), mode, pay.header() if pay else None) if x)
+    description = (f"{header}\n\n{newest}" if header else newest).strip()
+    if description:
+        out["description"] = description[:DESCRIPTION_CAP]
+    return out
