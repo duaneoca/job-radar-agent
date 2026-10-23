@@ -375,6 +375,14 @@ the agent. On a `recruiter_outreach` email the agent extracts **ONE** recruiter 
 A recruiter card is **extracted structured data — the same class as the company/role already in
 `postings`**, not email content. It therefore stays inside the content-minimization boundary.
 
+**The pitched role is a posting too.** Nearly every `recruiter_outreach` email offers one role, so
+the same write carries it in `postings` (≤1 per recruiter email): `role` and `company` are picked by
+Jev from short fragments of the subject and the first body lines (never written); `company` is the
+hiring company when named, else the agency with an "(agency)" suffix, else "Unknown company";
+`link` is the first apply/job-board link in the body or omitted. Dedup, `possible_duplicate` and
+`matched_review_id` work as for alert postings (§3.6); `raw_extracted_json.recruiter_posting`
+records the picks. A re-sent pitch the dedup store has seen is not written again.
+
 **Object** (all optional except `name`; **OMIT** unknown fields — never empty strings or guesses;
 **plain strings only — NO markup, NO raw body / free-text snippets**):
 

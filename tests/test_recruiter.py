@@ -69,9 +69,11 @@ def test_card_copies_values_and_uses_jev_picks():
         "linkedin_url": "https://www.linkedin.com/in/pat-example-123",
         "title": "Senior Technical Recruiter", "employer": "Example Staffing Inc", "is_agency": True,
     }
-    # Jev sees only header + the signature region (newest message's last lines), no quoted history
+    # Jev sees only header + the signature region (newest message's last lines) + the first lines
+    # of the newest message (where the pitched role is) — never quoted history
     state = jev.calls[0][0]
-    assert set(state) == {"from", "subject", "signature"} and "Other Corp" not in state["signature"]
+    assert set(state) == {"from", "subject", "signature", "body_head"}
+    assert "Other Corp" not in state["signature"] and "Other Corp" not in state["body_head"]
 
 
 def test_low_probability_none_and_out_of_range_picks_are_omitted():

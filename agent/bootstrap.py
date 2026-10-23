@@ -67,6 +67,7 @@ def build_components() -> Components:
     sort_stage = None
     retention_stage = None
     retention = make_retention_policy()
+    dedup = make_dedup_store()      # shared by the link picker and the sorter's recruiter postings
     if os.environ.get("EMAIL_READER_TRANSPORT", "direct").lower() == "mcp":
         from .reader_mcp import McpReaderClient
         reader: object = McpReaderClient()
@@ -79,16 +80,16 @@ def build_components() -> Components:
             dest_folders={"unprocessed": folders.unprocessed},
             since_days=since, limit=email_settings.max_emails_per_run,
         )
-        # The sorter reads the ROOT folder through the same provider (one mailbox connection).
+        # The sorter reads the ROOT folder through the same provider (one mailbox connection),
+        # and shares the dedup store so a role a recruiter re-sends is written once.
         sort_stage = make_sort_stage(ProviderReader(
             provider, source=folders.root, dest_folders=folders.sort_destinations(),
-            since_days=since, limit=email_settings.max_emails_per_run))
+            since_days=since, limit=email_settings.max_emails_per_run), dedup=dedup)
         if retention.enabled:
             from .retention import RetentionStage
             retention_stage = RetentionStage(
                 provider, {"social": folders.social, "postings": folders.postings}, retention)
     writer = RestWriter(agent_settings.jobradar_api_url, agent_settings.agent_api_key)
-    dedup = make_dedup_store()
     notifier = make_notifier()
     from .budget import DailySpendStore
 
