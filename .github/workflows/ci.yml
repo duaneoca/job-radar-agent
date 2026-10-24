@@ -29,9 +29,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install deps
+      # Same hash-pinned bytes as the image (README › Pinned dependencies). pytest is test-only.
+      - name: Install deps (hash-locked)
         run: |
-          python -m pip install --upgrade pip
-          pip install . pytest
+          pip install --require-hashes -r requirements-build.lock
+          pip install --require-hashes -r requirements.lock
+          pip install --no-deps --no-build-isolation .
+          pip install pytest
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  image:
+    name: Image supply-chain check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t job-radar-agent:ci .
+      - name: No startup hooks; litellm pinned
+        run: |
+          PIN=$(grep -oE '^litellm==[0-9.]+' requirements.lock)
+          docker run --rm --entrypoint python -v "$PWD/scripts:/check:ro" job-radar-agent:ci \
+            -I -S /check/check_site_packages.py --pin "$PIN"
