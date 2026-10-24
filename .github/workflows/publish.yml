@@ -31,6 +31,19 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
             type=ref,event=tag
+      # Build once locally and inspect it BEFORE anything is pushed (README › Pinned dependencies).
+      - name: Build (local, for inspection)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: job-radar-agent:check
+          cache-from: type=gha
+      - name: No startup hooks; litellm pinned
+        run: |
+          PIN=$(grep -oE '^litellm==[0-9.]+' requirements.lock)
+          docker run --rm --entrypoint python -v "$PWD/scripts:/check:ro" job-radar-agent:check \
+            -I -S /check/check_site_packages.py --pin "$PIN"
       - name: Build + push
         uses: docker/build-push-action@v6
         with:
