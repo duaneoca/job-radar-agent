@@ -86,6 +86,10 @@ screen ─┬─ sender rejected ───────────────�
 
 ## Key conventions & invariants
 
+- **`litellm` is pinned `==1.106.2` and every dependency is hash-locked** (`requirements.lock`,
+  installed with `--require-hashes`; CI fails on unexpected `.pth`/`sitecustomize.py` in the image).
+  On purpose — LiteLLM's PyPI releases were compromised 2026-03-24 and 2026-10-21. Never loosen or
+  bump it as a side effect; see README › Pinned dependencies.
 - **Never touch the Job Radar DB directly**; never create `Job`/`UserJobReview` rows (the user imports
   from the inbox via the bookmarklet).
 - **Mailbox mutations: read / mark-read / move** per message, plus ONE removal path: the retention
