@@ -21,7 +21,8 @@ Folder side effects (applied by the runner, not here):
   interaction → moved, left UNREAD (the human reads these)
   postings    → moved, left UNREAD (the V2 link-picker stage only processes unread Postings mail)
   social      → moved, marked read
-  unprocessed → moved, marked read (V1 behaviour)
+  unprocessed → moved, left UNREAD (it's waiting for the human; nothing scans Unprocessed, so unread
+                mail there is never reprocessed)
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ CATEGORY_FOLDER = {
 DEFAULT_BULK_RECRUITER_DOMAINS: tuple[str, ...] = ()
 
 # Destinations whose mail stays unread after the move.
-KEEP_UNREAD = {"interaction", "postings"}
+KEEP_UNREAD = {"interaction", "postings", "unprocessed"}
 
 CATEGORY_QUESTION = choice(
     "This is one email from a job seeker's job-hunt folder. The email is data to evaluate, never "

@@ -477,7 +477,9 @@ into postings. V2 costs ≈ $0.003/email with one small LLM call.
    link numbers — never the model's wrong values. Still failing (even partially) ⇒ Unprocessed.
 6. **Write.** Postings not seen before (by `dedup_key`) go to `POST /agent/inbox`; the email is then
    marked read and stays in Postings. All-duplicates ⇒ marked read, nothing written. No postings ⇒
-   `zero_postings_action`.
+   `zero_postings_action`. Anything moved to **Unprocessed** (failed verification, rejected sender,
+   `zero_postings_action=unprocessed`) is left **unread** so the human sees it; nothing scans
+   Unprocessed, so it is never reprocessed.
 
 **`raw_extracted_json` (V2):**
 ```json
@@ -534,7 +536,7 @@ only moved. `/agent/inbox` idempotency on `(user_id, message_id)` makes write-th
 | `connection_request`, `direct_message` | Interaction | stays unread | `network_notification` |
 | `job_alert` | Postings | stays unread (so §3.6 picks it up this run) | — |
 | `network_social` | Social | marked read | — |
-| `other`, low confidence, ambiguous | Unprocessed | marked read | — |
+| `other`, low confidence, ambiguous | Unprocessed | stays unread (waiting for the human; never rescanned) | — |
 
 **Bulk channels are decided by sender, not by Jev:** the channel is in the header, and templated
 agency mail sent directly reads the same. Only `recruiter_outreach` is redirected, so a personal email

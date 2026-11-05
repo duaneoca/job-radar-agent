@@ -30,7 +30,7 @@ def test_confident_answer_routes_to_its_folder(cat, folder, mark_read):
 
 def test_other_goes_to_unprocessed_even_when_confident():
     d = _decide(_ans("other", 0.99))
-    assert d.folder == "unprocessed" and d.mark_read
+    assert d.folder == "unprocessed" and not d.mark_read     # left unread for the human
 
 
 def test_low_confidence_goes_to_unprocessed():

@@ -75,7 +75,7 @@ def test_routes_writes_interaction_and_moves_once_each():
     res = stage.run(w)
     assert reader.moves == [("<r>", "interaction", False), ("<u>", "interaction", False),
                             ("<a>", "postings", False), ("<s>", "social", True),
-                            ("<q>", "unprocessed", True), ("<d>", "interaction", False)]
+                            ("<q>", "unprocessed", False), ("<d>", "interaction", False)]
     assert dict(res.moved) == {"interaction": 3, "postings": 1, "social": 1, "unprocessed": 1}
     # only Interaction mail is written; postings are left to the link-picker stage
     assert [p["message_id"] for p in w.inbox_entries] == ["<r>", "<u>", "<d>"]

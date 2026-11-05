@@ -7,8 +7,8 @@ For each unread email in the ROOT folder (newest-first, age + count caps from th
      `recruiter_outreach` that write carries the recruiter card (agent/recruiter.py →
      /recruiters/suggestions) and the ONE role the recruiter is pitching as a posting, from the same
      Jev call — skipped when the dedup store has seen that role already (recruiters re-send).
-  3. Then the ONE mailbox mutation: move it (Interaction + Postings stay unread; Social + Unprocessed
-     are marked read).
+  3. Then the ONE mailbox mutation: move it (Interaction, Postings and Unprocessed stay unread; Social
+     is marked read).
 
 Write-then-move is safe to repeat: /agent/inbox is idempotent on (user, Message-ID), so if the move
 fails the next run re-sends and gets the existing row back. A move that cannot find the message
