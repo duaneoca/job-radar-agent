@@ -49,7 +49,7 @@ tests/              synthetic samples only (tests/samples.py) — real emails ar
 ## Sort stage (one email, runs first; `SORTER_ENABLED`)
 
 ```
-unread in ROOT → Jev category → folder-summed prob ≥ min & margin ok? ─ no → Unprocessed (read)
+unread in ROOT → Jev category → folder-summed prob ≥ min & margin ok? ─ no → Unprocessed (unread)
    ├─ interaction  → POST /agent/inbox (card + the pitched role as ONE posting if
    │                 recruiter_outreach, from the same Jev call; dedup-skipped if re-sent;
    │                 with location/remote/annual pay/description — agent/pay.py, spec §3.5) → move
@@ -80,7 +80,8 @@ screen ─┬─ sender rejected ───────────────�
   Same-job duplicates collapse silently (no retry).
 - **Retry feedback references only our own link numbers** — never the model's wrong values.
 - **Partial success = failure** → Unprocessed (whole email).
-- **finalize** is the single mailbox mutation: mark read in place, or move to Unprocessed.
+- **finalize** is the single mailbox mutation: mark read in place, or move to Unprocessed (left
+  **unread** — Unprocessed is the human's queue and is never scanned, so it's never reprocessed).
 
 ---
 

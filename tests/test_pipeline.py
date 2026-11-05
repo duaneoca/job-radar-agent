@@ -81,6 +81,7 @@ def test_three_failed_attempts_go_to_unprocessed_without_writing():
     assert final["outcome"] == "needs_review" and "3 attempts" in final["reason"]
     assert writer.inbox_entries == []
     assert reader.moves == [("<m1@x>", "unprocessed")] and reader.marked_read == []
+    assert reader.moved_unread == ["<m1@x>"]          # Unprocessed mail stays unread for the human
 
 
 def test_partial_success_still_goes_to_unprocessed():
@@ -115,7 +116,7 @@ def test_rejected_sender_costs_no_llm_call():
     final, llm, writer, reader = _run(email, [])           # FakeLLM would fail if called
     assert llm.calls == [] and writer.inbox_entries == []
     assert final["outcome"] == "needs_review" and "allow-list" in final["reason"]
-    assert reader.moves == [("<m1@x>", "unprocessed")]
+    assert reader.moves == [("<m1@x>", "unprocessed")] and reader.moved_unread == ["<m1@x>"]
 
 
 def test_spoofed_sender_without_dmarc_costs_no_llm_call():
@@ -136,6 +137,7 @@ def test_newsletter_with_no_postings_follows_the_zero_postings_setting():
     assert final["outcome"] == "no_postings" and reader.marked_read == ["<m1@x>"]
     final, _, writer, reader = _run(email, [LinkPicks()], zero="unprocessed")
     assert reader.moves == [("<m1@x>", "unprocessed")] and writer.inbox_entries == []
+    assert reader.moved_unread == ["<m1@x>"]
 
 
 def test_duplicates_are_skipped_on_a_later_email(tmp_path):

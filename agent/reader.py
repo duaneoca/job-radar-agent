@@ -70,6 +70,7 @@ class FakeReader:
         self._unread = unread or []
         self.moves: list[tuple[str, str]] = []
         self.marked_read: list[str] = []
+        self.moved_unread: list[str] = []      # moves made with mark_read=False
 
     def get_unread(self) -> list[EmailRef]:
         return list(self._unread)
@@ -80,3 +81,5 @@ class FakeReader:
     def move_and_mark(self, message_id: str, destination: Destination,
                       mark_read: bool = True) -> None:
         self.moves.append((message_id, destination))
+        if not mark_read:
+            self.moved_unread.append(message_id)

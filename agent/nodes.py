@@ -200,10 +200,11 @@ class Nodes:
                            f"attempts ({len(state.get('issues') or [])} open issue(s))")}
 
     def finalize(self, state: AgentState) -> dict[str, Any]:
-        """The single mailbox mutation: move to Unprocessed, or mark read in place."""
+        """The single mailbox mutation: move to Unprocessed (left UNREAD — it needs the human, and
+        nothing scans Unprocessed, so it is never reprocessed), or mark read in place."""
         message_id = state["email"]["message_id"]
         if state.get("destination"):
-            self.reader.move_and_mark(message_id, state["destination"], mark_read=True)
+            self.reader.move_and_mark(message_id, state["destination"], mark_read=False)
         elif state.get("mark_read"):
             self.reader.mark_read(message_id)
         return {}
