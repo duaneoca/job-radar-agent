@@ -1,7 +1,7 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.6 (relay recruiters stay `recruiter_outreach`; Job Radar groups shared relays by person — §3.7)
-**Previous:** 0.5 mailbox retention (§3.8); 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
+**Version:** 0.7 (staffing email agent — recruiter mail → jobs + reply drafts, §3.9; agent settings from Job Radar, §2.4)
+**Previous:** 0.6 relay recruiters stay `recruiter_outreach` (§3.7); 0.5 mailbox retention (§3.8); 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
 
@@ -16,6 +16,7 @@
 |---|---|---|
 | LangGraph agent | job-radar-agent | **V2:** reads the Postings folder, extracts links, one LLM pick, deterministic verification, writes postings (§3.6) |
 | Email Reader MCP (Server 1) | job-radar-agent | Mailbox access (read / mark-read / move only) |
+| Draft stage | job-radar-agent | **§3.9:** writes reply DRAFTS to the Drafts folder (in-process, never an MCP tool; nothing is ever sent) |
 | Notifiers + HITL poller | job-radar-agent | Slack/Telegram/Discord; resumes checkpoints from decisions |
 | Job Radar Writer MCP (Server 2) | job-radar | The agent's ONLY write path into Job Radar |
 | tracker-api `/agent/*` | job-radar | REST endpoints behind the Writer MCP + frontend |
@@ -23,8 +24,9 @@
 
 **Hard boundary:** the agent NEVER touches the Job Radar database directly. All reads/writes go
 through the Writer MCP → tracker-api (cloud) or the equivalent REST `/agent/*` endpoints (local).
-The agent NEVER creates `Job` or `UserJobReview` rows (job creation happens later via the existing
-bookmarklet `POST /jobs/manual`).
+The agent NEVER creates `Job` or `UserJobReview` rows itself. Job creation happens via the existing
+bookmarklet `POST /jobs/manual`, or — **§3.9 only** — when the agent's inbox write asks Job Radar to
+import a recruiter posting, which runs Job Radar's own shared import function server-side.
 
 ### 0.1 Two MCP servers, two write transports — rationale
 
@@ -84,6 +86,14 @@ set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` o
 | import_status | enum | `pending \| imported \| dismissed` |
 | imported_review_id | UUID null | FK → user_job_reviews once user imports |
 | dedup_key | text null | **NEW (§3.6).** Stable posting identity from the agent. Phase A: nullable, stored. Phase B: partial UNIQUE `(user_id, dedup_key) WHERE dedup_key IS NOT NULL`; a conflicting posting is skipped, not an error |
+| employment_type | enum null | **NEW (§3.9).** `full_time \| contract \| contract_c2c \| contract_w2 \| contract_to_hire` |
+| work_mode | enum null | **NEW (§3.9).** `onsite \| hybrid \| remote`; replaces the boolean `remote` here and on `Job` (data migration) |
+| location | text null | Already in Job Radar (recruiter job details). **§3.9:** cleaned to `City, ST` or `ST` |
+| jd_text | text null | **NEW (§3.9).** the cleaned JD the agent dedups on (≤ 20,000 chars) |
+| outcome | enum null | **NEW (§3.9).** `imported \| duplicate \| filtered`; null for non-staffing postings |
+| outcome_reason | text null | **NEW (§3.9).** human-readable, shown in the inbox (≤ 300 chars) |
+| outcome_review_id | UUID null | **NEW (§3.9).** the review created (`imported`) or matched (`duplicate`) |
+| apply_directly | bool | **NEW (§3.9).** in-house recruiter with an apply link ⇒ no draft; inbox shows "apply directly" |
 | created_at | timestamptz | |
 
 ### 1.3 `inbox_interactions` — one row per application-status-update email (agent V1 only; V2 does not write these)
@@ -226,6 +236,11 @@ posting of an email deletes the `inbox_emails` row (mirror existing last-review-
 |---|---|---|---|
 | `GET /agent/config` | (user from key) | `{provider, folders{...}, llm{provider, preferred_model, api_key}, email_credentials{...decrypted...}}` | **Cloud path only.** Returns DECRYPTED secrets — so it MUST be called **in-cluster** (`http://tracker-api/...`), never through Cloudflare `[H6a]`. **Local self-host path does NOT call this** — the local agent uses its own LLM key + Proton creds from local `.env`. Server-side decrypt; strongest auth; rate-limited; audit-logged. `[H6/C3]` |
 | `GET /agent/reviews` | (user from key) | `[{review_id, company, title, status, url}]` | The user's `UserJobReview` rows, for matching/dedup. |
+| `GET /agent/settings` | (user from key) | §2.4 | **NEW.** The user's NON-SECRET agent settings. Externally reachable (unlike `/agent/config`); MUST NOT carry any key, password or token. |
+| `GET /agent/resume` | (user from key) | `application/pdf` | **NEW (§3.9).** The resume PDF. 404 when none. The agent fetches it only when `staffing.resume.sha256` changes. |
+| `GET /agent/email-jobs?since_days=N` | (user from key) | `[{review_id, company, role, location, work_mode, jd_text, created_at, applied_via}]` | **NEW (§3.9).** Email-sourced jobs for dedup. |
+| `GET /agent/draft-candidates` | (user from key) | §3.9 | **NEW (§3.9).** Email-sourced jobs with the AI review done, `ai_score ≥` the draft threshold, no draft, no application recorded. |
+| `POST /agent/reviews/{review_id}/draft` | `{draft_message_id, vendor, note_kind}` | `{ok}` | **NEW (§3.9).** Draft stamp. Idempotent; a second stamp returns the first. Validates ownership `[H1]`. |
 | `POST /agent/inbox` | inbox payload (§3.1) | `{inbox_email_id, posting_ids[]}` | Creates email + ≤30 postings. Validates link scheme `[C2]`. On `recruiter_outreach` may carry a recruiter card (§3.5) — typed `recruiter` and/or `raw_extracted_json.recruiter_contact`. |
 | `POST /agent/interactions` | interaction payload (§3.2) | `{interaction_id, applied_status?}` | If matched, updates the review status + timeline (reuses existing PATCH logic) `[D9/D10]`. |
 | `POST /agent/hitl/register` | `{hitl_id, candidates[review_id]}` | `{ok}` | Agent registers a pending decision before/while posting Slack. |
@@ -255,8 +270,9 @@ stores keys hashed — can't hand plaintext back). So cloud calls use **`X-Inter
 NetworkPolicy). Rule: **every per-user operational endpoint accepts EITHER auth mode** —
 `X-Agent-Key` (local → derive user) **or** `X-Internal-Token` + `user_id` (cloud):
 - **read:** `GET /agent/reviews` (needed for matching/dedup — fetched per user at match time, NOT
-  bundled into `cloud/config`)
-- **write:** `POST /agent/{inbox, interactions, runs, hitl/register, hitl/consume}`
+  bundled into `cloud/config`); `GET /agent/{settings, resume, email-jobs, draft-candidates}` (§2.4, §3.9)
+- **write:** `POST /agent/{inbox, interactions, runs, hitl/register, hitl/consume}`;
+  `POST /agent/reviews/{review_id}/draft` (§3.9)
 
 Only enumeration (`/agent/cloud/users`) and the creds bootstrap (`/agent/cloud/config/{user_id}`)
 are cloud-specific endpoints; everything else is the existing per-user endpoint with dual auth.
@@ -271,6 +287,7 @@ on the dual-auth reads/writes. (`/agent/cloud/config/{user_id}` carries the id i
 | `GET /agent/inbox` | user's inbox emails + postings/interactions (paginated) |
 | `PATCH /agent/inbox/{id}` | dismiss / mark-handled |
 | `DELETE /agent/inbox/{id}` | delete (cascades postings; mirrors job delete) |
+| `POST /agent/inbox/postings/{id}/import` | **NEW (§3.9).** "Process anyway" on a `filtered` / `duplicate` posting; same shared import function |
 | `GET /agent/stats` | ops-dashboard metrics (per-user); admin variant returns global |
 | `GET /agent/keys` | list this user's agent keys (`key_hint` only, never plaintext) |
 | `POST /agent/keys` | mint a new agent key; returns the plaintext **once** |
@@ -288,6 +305,13 @@ A dedicated **Settings → Email Agent** page is the single per-user home for th
 | **Notifications** — Slack/Telegram/Discord channel + connect | notifier config `[D16]` |
 | **Agent status & stats** — last run / health + the per-user business stats | `agent_runs` + `GET /agent/stats` `[D21/Q8]` |
 | **Enable / disable** — pause the agent for this user | (toggle) |
+| **Sorter (NEW, §2.4)** — on/off, confidence + margin, bulk recruiter domains (moved from `.env`) | `sorter` in `/agent/settings` |
+| **Staffing email agent (NEW, §3.9)** — on/off, auto-draft on/off, excluded sender domains, allowed employment types, draft score threshold, dedup window, mark read per category, draft prompt, Slack on/off. Work mode, locations, min pay and excluded companies are NOT repeated here: they come from the user's search Criteria (link to them) | `staffing` in `/agent/settings` |
+
+**Moved settings (§2.4):** the Email policy and Mailbox retention sections are now served by
+`/agent/settings` to local AND cloud agents; `email_policy` / `retention` in the cloud config remain
+until the agent reads `/agent/settings` everywhere, then are dropped. The **resume PDF** is uploaded
+on the Profile page next to the text resume (§3.9), not here.
 
 LLM provider/model keys stay on the EXISTING API Keys page (shared with scoring/research; the agent
 reuses them — do NOT duplicate). The global ops dashboard lives on the admin page; per-user stats
@@ -301,6 +325,48 @@ live here on the user's Email Agent page.
 > Cloud-deployed agents resume directly from the cluster Postgres checkpointer; local agents resume
 > via the `GET /agent/hitl/pending` poll. The callback endpoint only RECORDS the decision — it is
 > checkpoint-location-agnostic. `[§8.15]`
+
+### 2.4 Agent settings — `GET /agent/settings` (non-secret, both auth modes)
+
+One per-user settings document for local and cloud agents alike, so no behavior exists only in a
+local config file. Read once per run, at preflight, next to `GET /agent/reviews`.
+
+```json
+{
+  "sorter": { "enabled": true, "min_confidence": 0.85, "min_margin": 0.30,
+              "bulk_recruiter_domains": [] },
+  "email_policy": { "allowed_sender_domains": ["linkedin.com"], "require_sender_auth": true,
+                    "zero_postings_action": "mark_read", "dedup_window_days": 30,
+                    "max_email_age_days": 14 },
+  "retention": { "social_days": 14, "postings_days": 14 },
+  "staffing": {
+    "enabled": false, "auto_draft": false,
+    "excluded_sender_domains": ["linkedin.com"],
+    "allowed_employment_types": ["full_time", "contract", "contract_c2c", "contract_w2", "contract_to_hire"],
+    "criteria": { "work_style": "remote", "home_city": "Austin, TX", "search_locations": ["TX"],
+                  "min_salary": 150000, "excluded_companies": [] },
+    "draft_score_threshold": 8.5,
+    "dedup_window_days": 30,
+    "mark_read": { "recruiter_outreach": true, "application_update": false,
+                   "connection_request": false, "direct_message": false },
+    "draft_prompt": "…",
+    "writing_skills": ["…"],
+    "slack_notify": true,
+    "resume": { "sha256": "…", "filename": "resume.pdf", "uploaded_at": "2026-11-01T12:00:00Z" }
+  }
+}
+```
+
+| Rule | |
+|---|---|
+| Secrets | NEVER in this response: no LLM/Jev/Langfuse keys, mail passwords, OAuth or Slack tokens. Those stay in `.env` (local) or `/agent/config` (cloud, in-cluster) `[H6a]`. |
+| Operator guards | NOT user settings, never here: daily spend ceiling, emails per run, retention cap per run, poll interval, cloud budget / circuit breaker `[H4]`. A user must not be able to raise their own spend. |
+| Missing fields | Each absent field falls back to the agent's `.env` value, then its built-in default — so the move off `.env` is incremental. |
+| Old Job Radar | 404 ⇒ treated as `{}` (staffing off, `.env` everywhere). Any other refusal fails preflight: nothing read, nothing spent. |
+| `criteria` | Copied from the user's active `Criteria` row (`work_style` = `remote \| hybrid \| onsite \| any`). Absent ⇒ no criteria-based filter. |
+| `resume` | Metadata only; null when none uploaded. The bytes come from `GET /agent/resume`. |
+| `writing_skills` | The `content` of the user's enabled writing skills whose scopes include `email_draft`. |
+| Validation | Server-side: domains are bare hostnames, days 1–365 (retention also 0/null = off), threshold 0–10, enums closed. |
 
 ---
 
@@ -327,6 +393,9 @@ Server: enforce ≤30 postings, http/https links only, dedup `(user_id, message_
 required — the agent substitutes the processing time when an email has no `Date` header.
 `dedup_key` (§3.6) and `truncated` are currently ignored by the server (no `extra="forbid"`), which is
 what makes the two-phase rollout safe. (V1 also sent an optional typed `recruiter` — §3.5.)
+**§3.9** adds optional posting fields (`employment_type`, `work_mode`, `location`, `jd_text`, `staffing`)
+and, for `staffing.outcome = imported | duplicate`, server-side job creation / attachment in the same
+transaction; the response then also carries `review_ids[]` aligned with `posting_ids[]`.
 
 ### 3.2 `POST /agent/interactions` (agent V1 only)
 ```json
@@ -516,6 +585,9 @@ means *allow any sender*. Unknown `zero_postings_action` values fail the user's 
 
 Until Phase B ships, **cloud users get no cross-email duplicate suppression** (pods keep no state).
 
+**Policy moves to `/agent/settings` (§2.4, v0.7):** the `.env` and `email_policy` rows above become
+fallbacks while both sides migrate. The duplicate memory is unchanged.
+
 ### 3.7 Agent sorter — Jev routes the root folder `[D25]`
 
 Optional stage (`SORTER_ENABLED`), run first in each pass, inside the same lock, preflight and daily
@@ -530,7 +602,7 @@ only moved. `/agent/inbox` idempotency on `(user_id, message_id)` makes write-th
 
 | Sorter category | Folder | Mailbox | `inbox_emails.category` |
 |---|---|---|---|
-| `recruiter_outreach` | Interaction | stays unread | `recruiter_outreach` + §3.5 card (see relay rule) |
+| `recruiter_outreach` | Interaction | stays unread (§3.9, when enabled: read once handled, per `staffing.mark_read`) | `recruiter_outreach` + §3.5 card (see relay rule) |
 | `recruiter_outreach` from a bulk channel (`BULK_RECRUITER_DOMAINS`, none by default) | Postings | stays unread | — (the §3.6 link picker handles it) |
 | `application_update` | Interaction | stays unread | `application_confirmation` |
 | `connection_request`, `direct_message` | Interaction | stays unread | `network_notification` |
@@ -607,6 +679,114 @@ Mitigations: Trash is recoverable, starring protects, per-run cap, counts in eve
 **Run record:** counts go in the run summary/logs; `POST /agent/runs` has no field for them yet
 (Job Radar ignores unknown fields; add `trashed` there if the ops dashboard should show it).
 
+
+### 3.9 Staffing email agent — recruiter mail → jobs + reply drafts `[D27]`
+
+Design and rationale: `docs/staffing-email-agent.md`. Off unless `staffing.enabled` (§2.4); drafts
+also need `staffing.auto_draft`. Current mail only — the existing Interaction backlog is never
+processed (the backlog eval reads it without touching any message).
+
+**Scope:** mail the sorter (§3.7) routes to Interaction as `recruiter_outreach`, whose sender domain
+(subdomains included) is not in `staffing.excluded_sender_domains` (default `linkedin.com`). Excluded
+mail keeps today's behavior exactly (inbox write with the pitched role, unread, no import, no draft).
+Other Interaction categories are untouched.
+
+#### Stage A — in the sort stage, per in-scope email
+
+1. **Extract (deterministic; Jev only picks).** Role, company, pay (`agent/pay.py`), the cleaned JD,
+   and:
+   | Field | Rule |
+   |---|---|
+   | `employment_type` | explicit text (C2C, W2, contract to hire, full time) > hourly pay quoted ⇒ `contract` > `is_agency` true ⇒ `contract` > `full_time`. C2C and W2 stay distinct |
+   | `work_mode` | `onsite \| hybrid \| remote` from explicit text; vague or missing ⇒ null |
+   | `location` | cleaned to `City, ST`, or `ST` when only a state is named; else null |
+   | `link` (apply link) | Jev picks one of the agent's numbered extracted links (`extract.py`) or none; URLs never come from a model and are never followed `[M2]` |
+   | `jd_text` | body minus greeting, signature (`signature_lines`), recruiter name, rate lines and stock boilerplate |
+2. **Hard filters (deterministic).** Drop clear misses only; a missing field never fails a filter.
+   | Filter | Passes when |
+   |---|---|
+   | Work mode | `criteria.work_style`: `remote` ⇒ remote; `hybrid` ⇒ remote or hybrid; `onsite` / `any` ⇒ all |
+   | Location | remote, or the role's state is a state named in `criteria.home_city` / `criteria.search_locations` (no geocoding — commute distance stays with the AI review's `location_rank`) |
+   | Employment type | in `staffing.allowed_employment_types` |
+   | Pay | top of the annualized range (hourly × 2,080) ≥ `criteria.min_salary` |
+   | Company | end client named and not in `criteria.excluded_companies` |
+3. **Dedup** against `GET /agent/email-jobs?since_days=<staffing.dedup_window_days>`, fetched once
+   per run; jobs imported earlier in the same run are appended. Jaccard over 5-word shingles of
+   `jd_text`: ≥ high threshold ⇒ duplicate; ≤ low ⇒ new; between ⇒ Jev yes/no "same job?" (≥ 0.75
+   duplicate, else new). Thresholds come from the backlog eval. For in-scope mail this replaces the
+   company + role `dedup_key` skip (vendors write "our client" or their own name), so an exact re-send
+   is recorded as `duplicate` too and every in-scope email gets exactly one outcome.
+4. **One inbox write** (`POST /agent/inbox`, §3.1) carrying the posting with its outcome:
+   ```json
+   { "company": "Acme", "role": "Data Architect", "link": "https://…",
+     "employment_type": "contract_c2c", "work_mode": "hybrid", "location": "Dallas, TX",
+     "jd_text": "…",
+     "staffing": { "outcome": "duplicate", "reason": "Same req as an email on Nov 2 (similarity 0.91)",
+                   "duplicate_of_review_id": "…", "similarity": 0.91, "apply_directly": false } }
+   ```
+   Server, in the same transaction: `imported` ⇒ the shared import function (create the job with
+   source `email`, the user's review, mark the posting imported, queue the AI review); `duplicate` ⇒
+   attach this email as a source of `duplicate_of_review_id` (ownership-validated `[H1]`);
+   `filtered` ⇒ store only. A repeated `(user_id, message_id)` returns the existing rows and creates
+   nothing — so write-then-move stays safe to retry.
+5. **Mark read by outcome** (`staffing.mark_read`): in-scope `recruiter_outreach` ⇒ read (default);
+   `application_update`, `connection_request`, `direct_message` and excluded senders ⇒ unread
+   (default). Replaces the blanket "Interaction stays unread" of §3.7 for these cases. The app inbox
+   keeps every email with its outcome and reason; filtered and duplicate items are dimmed and offer
+   "process anyway" (`POST /agent/inbox/postings/{id}/import`).
+
+**Apply links:** `staffing.apply_directly` = an apply link was picked AND `is_agency` is false (an
+in-house recruiter pointing at their own careers page). Such jobs get no draft; the inbox and Slack
+say "apply directly". Otherwise the link is stored and drafting proceeds.
+
+#### Stage B — draft stage, after the sort stage, each run
+
+`GET /agent/draft-candidates` returns:
+```json
+{ "profile_summary": "…",
+  "candidates": [ { "review_id": "…", "ai_score": 8.9, "ai_pros": ["…"], "role": "…",
+                    "company": "…", "location": "…", "jd_text": "…",
+                    "source": { "message_id": "<…>", "sender": "…", "subject": "…",
+                                "received_at": "…" },
+                    "recruiter_first_name": "Pat", "apply_directly": false } ] }
+```
+Server filter: source `email`, AI review done, `ai_score ≥ staffing.draft_score_threshold`, no draft
+stamp, `applied_via` null, not `apply_directly`. `source` is the FIRST email of the job — later vendor
+emails are attached sources and never get a draft.
+
+Per candidate:
+1. Fetch the original by Message-ID from the mailbox. Gone ⇒ skip, reason in Slack.
+2. Sender check (`agent/senders.py`): DMARC must pass for the From domain (Dice's relay = Dice's
+   domain). Fail ⇒ no draft; the job stays.
+3. **Note** from the configured LLM with `staffing.draft_prompt` + `writing_skills`. Inputs: role,
+   company, location, `jd_text` fenced in delimiters with angle brackets stripped `[C1]`, recruiter
+   first name, `profile_summary`, `ai_pros`. Never the raw email. **Code check** — reject on any URL,
+   email address, phone number, `$` amount or rate, date, or the words represent / authorize /
+   exclusive / RTR; > ~120 words ⇒ reject. Rejected ⇒ the fixed template (role, company, first name,
+   resume attached). No retry. One LLM call per draft, charged to the daily ceiling `[H4]`.
+4. **Draft MIME:** `text/plain` only; `Subject: Re: <original>`; `In-Reply-To` and `References` =
+   the original Message-ID (Gmail: also its `threadId`); To = the original Reply-To, else From; the
+   note, then the original quoted under "On <date>, <sender> wrote:"; the resume PDF attached;
+   `Message-ID: <jr-draft-<review_id>@job-radar-agent>`.
+5. **Write** to Drafts: IMAP `APPEND` to the special-use `\Drafts` mailbox (else "Drafts") with
+   `(\Draft \Seen)`; Gmail `users.drafts.create` (within `gmail.modify` `[H5]`). Idempotent: if the
+   Drafts folder already holds that Message-ID, skip the append.
+6. **Stamp** `POST /agent/reviews/{review_id}/draft` `{draft_message_id, vendor, note_kind:
+   generated | template}`. Job Radar records `applied_via` = that vendor by default; the user can
+   change it in the UI ("via vendor X" / "applied directly"); either blocks further drafts.
+7. **Notify** (if `staffing.slack_notify`): job, score, vendor, "draft is in Drafts", note kind, and
+   the apply link when there is one.
+
+**Never:** send mail, expose draft writing as an MCP tool, mark a generated draft in its body, read
+the Sent folder.
+
+**Run record:** counts only — `staffing_imported`, `staffing_duplicates`, `staffing_filtered`,
+`drafts_written`, `drafts_skipped` (Job Radar ignores unknown fields until it stores them).
+
+**Rollout order:** job-radar ships settings + `/agent/settings`, the posting fields + outcome-driven
+import, and `email-jobs` before the agent enables Stage A; `draft-candidates`, the stamp and the
+resume before Stage B. The agent treats a missing endpoint as "feature off".
+
 ---
 
 ## 4. Writer MCP (Server 2) tool surface (job-radar implements)
@@ -620,6 +800,7 @@ Transport HTTPS (streamable). Auth: `X-Agent-Key` per user. Each tool wraps one 
 | `record_interaction(payload)` | `POST /agent/interactions` |
 | `register_hitl(hitl_id, candidates)` | `POST /agent/hitl/register` |
 | `report_run(record)` | `POST /agent/runs` |
+| `import_posting(posting_id)` | **NEW (§3.9).** The shared import function (same as the inbox's Add Job / "process anyway") |
 
 Internal MCP→tracker-api calls protected by NetworkPolicy + shared internal token; not publicly
 reachable. Cloudflare→origin TLS Full (Strict). `[H3]`
@@ -643,6 +824,8 @@ reachable. Cloudflare→origin TLS Full (Strict). `[H3]`
 | H6a | **Decrypted creds never traverse Cloudflare.** Cloud agents call `GET /agent/config` **in-cluster** (`http://tracker-api`), bypassing the Cloudflare TLS-termination edge. **Local agents don't call it at all** — they use local `.env` creds (the owner's own LLM key + Proton creds; Gmail tokens for cloud users stay in-cluster). Result/telemetry data (inbox writes, `POST /agent/runs`) carries no creds, so it uses the normal Cloudflare path. **Enforced (2026-06-12):** job-radar gates `/agent/config` to in-cluster only; the other `/agent/*` endpoints stay externally reachable via `X-Agent-Key`. | both |
 | M1/M2 | No attachment parsing, no remote content fetch, agent never dereferences links | agent |
 | R1 | **No permanent delete, anywhere.** The only removal is the §3.8 retention sweep: allow-listed folders (Social, Postings), server-date + not-starred eligibility, move to Trash, capped per run, never exposed as an MCP tool, never selected by model output | agent |
+| D1 | **Drafts, never sends (§3.9).** The only mailbox write besides read/move/Trash is an APPEND of a plain-text reply draft to the Drafts folder (Gmail `drafts.create`). No send capability anywhere; never an MCP tool; the draft note is code-checked (no URLs, contacts, amounts, dates, representation consent) with a fixed-template fallback; drafts only for senders passing the DMARC check | agent |
+| D2 | **Agent-requested job creation (§3.9).** Only via the inbox write's `staffing.outcome`, through Job Radar's shared import function; idempotent on `(user_id, message_id)`; `outcome_review_id` / `duplicate_of_review_id` ownership-validated `[H1]`; all posting fields length-capped and escaped `[C2]` | job-radar |
 | L5 | Posting links extracted from email: scheme-allowlisted agent-side (`clean_link`, http/https only) before send AND re-validated by job-radar at write+render (C2); never dereferenced (M2); residual phishing-on-click mitigated by human review + showing host | both |
 
 ---
