@@ -20,6 +20,7 @@ The window is measured from the most recent sighting, so a job re-sent every day
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sqlite3
@@ -37,6 +38,21 @@ _ATS_HOSTS = (
 )
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 
+# Job Radar stores dedup_key as String(300) and truncates to fit (INTEGRATION_SPEC §3.6).
+# The agent caps its own keys to the same length so the local SQLite store and the server
+# hold the SAME string for a posting — otherwise local and cloud could disagree about what
+# is a duplicate. Capped by prefix + a hash of the full key rather than a plain cut, so two
+# long keys sharing a 300-character prefix stay distinct instead of silently colliding.
+MAX_DEDUP_KEY = 300
+_HASH_CHARS = 16
+
+
+def _cap(key: str) -> str:
+    if len(key) <= MAX_DEDUP_KEY:
+        return key
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:_HASH_CHARS]
+    return f"{key[:MAX_DEDUP_KEY - _HASH_CHARS - 1]}:{digest}"
+
 
 def _slug(s: str) -> str:
     return _NON_ALNUM.sub(" ", match_key(s)).strip()
@@ -47,6 +63,10 @@ def _host_is(host: str, domain: str) -> bool:
 
 
 def dedup_key(url: str, company: str, title: str) -> str:
+    return _cap(_dedup_key(url, company, title))
+
+
+def _dedup_key(url: str, company: str, title: str) -> str:
     parts = urlsplit(url or "")
     host = parts.netloc.lower().split(":")[0]
     query = {k.lower(): v for k, v in parse_qs(parts.query).items()}
