@@ -5,8 +5,10 @@ Status: agreed design, not started. Spans both repos: `job-radar` (API, models, 
 INTEGRATION_SPEC §3.9 (agent settings, §2.4). Job Radar's work list is in
 `docs/agent-integration.md`.
 
-Items marked **(proposed)** were not explicitly decided. They are the default unless changed in
-review.
+Review complete (2026-11-13). The items previously marked **(proposed)** — the work-mode filter,
+the location filter and the apply-link rule — are **decided** and written below as settled
+behavior. §2.4's settings split is decided too, with `max_email_age_days` bounded by the operator
+cap (see "Settings come from Job Radar").
 
 ## Goal
 
@@ -43,6 +45,11 @@ config (in cluster, because it carries decrypted secrets). This feature changes 
 - **Operator cost guards stay operator config**, not user settings: daily spend ceiling, emails
   per run, retention cap per run, poll interval, and the cloud budget and circuit breaker. In
   cloud a user must not be able to raise their own spend.
+- **`max_email_age_days` is a user setting bounded by the operator cap.** It is both a preference
+  and a spend lever — widening it pulls more mail per run — so the agent applies
+  `min(user_setting, operator_cap)` rather than taking the user's value outright. This keeps it in
+  the settings document without letting a user raise their own spend. `dedup_window_days` is a
+  pure preference and is taken as given.
 - During the move, a setting missing from the response falls back to its `.env` value, then the
   built-in default. Once Job Radar ships the tab, the `.env` copies are removed from
   `.env.example`.
@@ -76,11 +83,21 @@ For an in scope `recruiter_outreach` email, after `build_card_and_posting`:
 4. Location is cleaned to `City, ST`, or `ST` when only a state is named. Deterministic, no LLM.
 5. Hard filters, deterministic, no LLM. They drop clear misses only. Closer calls are left to
    the AI review, which already ranks location. A missing field never fails a filter.
-   - Work mode **(proposed)**: from Criteria `work_style`. `remote` passes remote only;
-     `hybrid` passes remote and hybrid; `onsite` and `any` pass everything.
-   - Location **(proposed)**: a remote role passes. An onsite or hybrid role passes when its
-     state is one of the states in Criteria `home_city` and `search_locations`. No geocoding;
-     commute distance stays with the AI review.
+   - Work mode: from Criteria `work_style`. `remote` passes remote only; `hybrid` passes remote
+     and hybrid; `onsite` and `any` pass everything. The ladder is deliberately permissive at the
+     `onsite` end — an onsite-preferring user should still have remote roles scored, not deleted
+     before the AI review sees them.
+   - Location: a remote role passes. An onsite or hybrid role passes when its state is in the
+     user's **allowed state set**. No geocoding; commute distance stays with the AI review.
+     The allowed state set is built from Criteria `home_city` **and** `search_locations`, both
+     reduced to two-letter state codes, because the two fields carry different shapes
+     (`"Austin, TX"` vs `["TX"]`):
+     - An entry naming a city with a state (`"Austin, TX"`) contributes that state.
+     - An entry that is a bare state (`"TX"`, `"Texas"`) contributes that state.
+     - An entry that parses to no state is **ignored** — it never fails the filter and never
+       empties the set.
+     - An empty allowed state set means no location filter at all.
+     Both repos implement this same reduction; it is contract, not an implementation detail.
    - Employment type: the allowed types setting (new, in the Email Agent tab).
    - Pay: the top of the annualized range (hourly × 2,080) is at least Criteria `min_salary`.
    - Company: not in Criteria `excluded_companies`, when an end client is named.
@@ -95,7 +112,7 @@ For an in scope `recruiter_outreach` email, after `build_card_and_posting`:
    blanket `KEEP_UNREAD` for Interaction. Nothing is lost by marking it read, since the app
    inbox has the email and its outcome.
 
-### Apply links **(proposed)**
+### Apply links
 
 Some vendor emails include an apply link. The link does not decide whether a reply makes sense;
 who sent it does. A vendor's own portal or a job board listing still goes through that vendor,
@@ -105,8 +122,13 @@ careers page means the link is the real way in.
 - The link is always captured and stored as the job's URL. URLs come from deterministic
   extraction (`extract.py`); Jev only picks which numbered link is the apply link. Links are
   never followed [M2], so the host of a click-tracking redirect cannot tell us where it goes.
-- `is_agency` false and an apply link present: no draft. The inbox and Slack say "apply
-  directly".
+- `is_agency` false and an apply link present: **no draft — the job is still imported.** Only the
+  reply draft is skipped; filtering, dedup, import and AI review all proceed exactly as they
+  otherwise would. The inbox and Slack say "apply directly".
+- **Ambiguous `is_agency` resolves to `true` (agency).** The whole branch turns on one
+  LLM-extracted boolean, and its two failure modes are not symmetric: a wrong `true` costs a draft
+  the user deletes in seconds, while a wrong `false` silently removes a draft the user never
+  learns existed. When extraction is unsure, draft.
 - Otherwise drafting proceeds as usual, and the Slack message mentions the apply link.
 
 ### Stage B: draft stage (new, runs each agent run after the sort stage)

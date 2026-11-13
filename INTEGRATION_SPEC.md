@@ -1,6 +1,6 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.7 (staffing email agent — recruiter mail → jobs + reply drafts, §3.9; agent settings from Job Radar, §2.4)
+**Version:** 0.7 (staffing email agent — recruiter mail → jobs + reply drafts, §3.9; agent settings from Job Radar, §2.4; review decisions of 2026-11-13 folded in)
 **Previous:** 0.6 relay recruiters stay `recruiter_outreach` (§3.7); 0.5 mailbox retention (§3.8); 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
@@ -363,6 +363,7 @@ local config file. Read once per run, at preflight, next to `GET /agent/reviews`
 | Operator guards | NOT user settings, never here: daily spend ceiling, emails per run, retention cap per run, poll interval, cloud budget / circuit breaker `[H4]`. A user must not be able to raise their own spend. |
 | Missing fields | Each absent field falls back to the agent's `.env` value, then its built-in default — so the move off `.env` is incremental. |
 | Old Job Radar | 404 ⇒ treated as `{}` (staffing off, `.env` everywhere). Any other refusal fails preflight: nothing read, nothing spent. |
+| `max_email_age_days` | A user setting **bounded by the operator cap**: the agent applies `min(user_setting, operator_cap)`. It is both a preference and a spend lever, so it lives here without letting a user widen their own run. `dedup_window_days` is a pure preference, taken as given. |
 | `criteria` | Copied from the user's active `Criteria` row (`work_style` = `remote \| hybrid \| onsite \| any`). Absent ⇒ no criteria-based filter. |
 | `resume` | Metadata only; null when none uploaded. The bytes come from `GET /agent/resume`. |
 | `writing_skills` | The `content` of the user's enabled writing skills whose scopes include `email_draft`. |
@@ -706,10 +707,16 @@ Other Interaction categories are untouched.
    | Filter | Passes when |
    |---|---|
    | Work mode | `criteria.work_style`: `remote` ⇒ remote; `hybrid` ⇒ remote or hybrid; `onsite` / `any` ⇒ all |
-   | Location | remote, or the role's state is a state named in `criteria.home_city` / `criteria.search_locations` (no geocoding — commute distance stays with the AI review's `location_rank`) |
+   | Location | remote, or the role's state is in the **allowed state set** (below). No geocoding — commute distance stays with the AI review's `location_rank` |
    | Employment type | in `staffing.allowed_employment_types` |
    | Pay | top of the annualized range (hourly × 2,080) ≥ `criteria.min_salary` |
    | Company | end client named and not in `criteria.excluded_companies` |
+   **Allowed state set** — `criteria.home_city` and `criteria.search_locations` carry different
+   shapes (`"Austin, TX"` vs `["TX"]`), so both reduce to two-letter state codes before the filter
+   runs. An entry naming a city with a state contributes that state; a bare state name or code
+   contributes that state; an entry that parses to no state is **ignored** (it never fails the
+   filter and never empties the set). An empty set means no location filter. Both repos implement
+   this same reduction — it is contract, not an implementation detail.
 3. **Dedup** against `GET /agent/email-jobs?since_days=<staffing.dedup_window_days>`, fetched once
    per run; jobs imported earlier in the same run are appended. Jaccard over 5-word shingles of
    `jd_text`: ≥ high threshold ⇒ duplicate; ≤ low ⇒ new; between ⇒ Jev yes/no "same job?" (≥ 0.75
@@ -735,9 +742,16 @@ Other Interaction categories are untouched.
    keeps every email with its outcome and reason; filtered and duplicate items are dimmed and offer
    "process anyway" (`POST /agent/inbox/postings/{id}/import`).
 
-**Apply links:** `staffing.apply_directly` = an apply link was picked AND `is_agency` is false (an
-in-house recruiter pointing at their own careers page). Such jobs get no draft; the inbox and Slack
-say "apply directly". Otherwise the link is stored and drafting proceeds.
+**Apply links:** `staffing.apply_directly` = an apply link was picked AND `is_agency` is **exactly
+`false`** (an in-house recruiter pointing at their own careers page). Such jobs get **no draft, but
+are still imported** — only the reply draft is skipped; filtering, dedup, import and AI review are
+unaffected. The inbox and Slack say "apply directly". Otherwise the link is stored and drafting
+proceeds.
+
+`is_agency` is `null` when the agent is unsure (§3.5; Jev yes/no at ≥ 0.75 / ≤ 0.25, else omitted).
+**`null` is treated as agency here, so an unsure email still gets a draft.** The two failure modes
+are not symmetric: a wrong "agency" costs a draft the user deletes in seconds, while a wrong
+"in-house" silently removes a draft the user never learns existed.
 
 #### Stage B — draft stage, after the sort stage, each run
 
