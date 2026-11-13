@@ -10,6 +10,25 @@ from mcp_email.config import folders
 from mcp_email.config import settings as E
 
 
+def transport_verdict(transport: str, *, sorter: bool, retention: bool):
+    """Report on EMAIL_READER_TRANSPORT, or None when there is nothing to say.
+
+    The sorter and retention read the ROOT folder through the in-process provider; the stdio
+    Email Reader exposes no such call, so `bootstrap` refuses to start under
+    EMAIL_READER_TRANSPORT=mcp. Doctor builds the provider directly, so without this check it
+    stays green while every real run exits immediately.
+
+    Returns (passed, detail), or None under the default 'direct' transport.
+    """
+    if transport.lower() != "mcp":
+        return None
+    needs_direct = [n for n, on in (("sorter", sorter), ("retention", retention)) if on]
+    if not needs_direct:
+        return True, "mcp — ok (link picker only)"
+    return False, (f"mcp — {' and '.join(needs_direct)} need EMAIL_READER_TRANSPORT=direct; "
+                   "every run will exit immediately")
+
+
 def run() -> int:
     ok = True
 
@@ -99,6 +118,14 @@ def run() -> int:
                       f"{type(exc).__name__}: {str(exc)[:160]}")
     else:
         check("sorter", False, "SORTER_ENABLED=false (postings folder only)", critical=False)
+
+    import os as _os
+    from .config import make_retention_policy as _mrp
+    verdict = transport_verdict(_os.environ.get("EMAIL_READER_TRANSPORT", "direct"),
+                                sorter=A.sorter_enabled, retention=_mrp().enabled)
+    if verdict is not None:
+        passed, detail = verdict
+        check("EMAIL_READER_TRANSPORT", passed, detail, critical=not passed)
 
     if not A.agent_api_key:
         check("agent API key set", False)
