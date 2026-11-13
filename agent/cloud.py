@@ -19,7 +19,7 @@ from typing import Any, Callable
 import httpx
 
 from .config import (llm_from_config_bundle, make_sort_stage, policy_from_config_bundle,
-                     retention_from_config_bundle, zero_action_from_config_bundle)
+                     retention_from_config_bundle, settings, zero_action_from_config_bundle)
 from .dedup import NullDedupStore
 from .reader import ProviderReader
 from .runner import run_once
@@ -142,11 +142,32 @@ def build_user_components(cfg: dict, user_id: str, *, base_url: str, internal_to
                            retention_stage=retention_stage)
 
 
+class UserConfigError(Exception):
+    """A user's components could not be built. Carried as a normal exception so the
+    per-user handler treats it as that user's failure, never as a run-wide exit."""
+
+
+def check_startup_config(cfg=None) -> None:
+    """Validate the pod-wide configuration BEFORE any user is touched.
+
+    The Jev key is system-wide (pod env), so `SORTER_ENABLED=true` with no
+    `TYPESAFE_API_KEY` is a deployment fault affecting every user identically.
+    `make_sort_stage` raises SystemExit for it, and SystemExit is a BaseException:
+    raised inside the per-user loop it would tear down the whole run on the first
+    user with the sorter on. Fail fast here, with the reason, having spent nothing.
+    """
+    cfg = settings if cfg is None else cfg     # resolved at CALL time, not def time
+    if cfg.sorter_enabled and not cfg.typesafe_api_key:
+        raise SystemExit("\u2717 SORTER_ENABLED=true but TYPESAFE_API_KEY is not set "
+                         "(system-wide pod env) \u2014 refusing to start the cloud run")
+
+
 def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token: str,
               prompts, notifier=None, since_days: int | None = 14, limit: int | None = 100,
               max_total_emails: int = 1000, dry_run: bool = False,
               daily_ceiling: float | None = None, spend_store=None,
               run_once_fn=run_once) -> dict[str, Any]:
+    check_startup_config()          # pod-wide config, before any user or any spend
     notifier = notifier or NullNotifier()
     summary = {"users": 0, "processed": 0, "escalations": 0, "errors": [], "stopped": None}
     consecutive_errors = 0
@@ -158,8 +179,16 @@ def cloud_run(config_client: CloudConfigClient, *, base_url: str, internal_token
         summary["users"] += 1
         try:
             cfg = config_client.config(uid)
-            comp = build_user_components(cfg, uid, base_url=base_url, internal_token=internal_token,
-                                         since_days=since_days, limit=limit)
+            try:
+                comp = build_user_components(cfg, uid, base_url=base_url,
+                                             internal_token=internal_token,
+                                             since_days=since_days, limit=limit)
+            except SystemExit as exc:
+                # Config faults surface as SystemExit (BaseException), which would otherwise
+                # skip the handler below and abort every remaining user. Downgrade it: this is
+                # one user's misconfiguration, not a shutdown. SystemExit from run_once itself
+                # is left alone, so a SIGTERM mid-run still stops the run.
+                raise UserConfigError(str(exc) or "configuration error") from None
             # user pings → the user's own Slack; admin/ops → the shared notifier. Suppress on dry-run.
             per_user_notifier = NullNotifier() if dry_run else RoutingNotifier(comp.user_notifier, notifier)
             try:
