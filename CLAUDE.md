@@ -92,7 +92,8 @@ screen ─┬─ sender rejected ───────────────�
   On purpose — LiteLLM's PyPI releases were compromised 2026-03-24 and 2026-10-21. Never loosen or
   bump it as a side effect; see README › Pinned dependencies.
 - **Never touch the Job Radar DB directly**; never create `Job`/`UserJobReview` rows (the user imports
-  from the inbox via the bookmarklet).
+  from the inbox via the bookmarklet). Planned exception, not built yet: the staffing email agent
+  (spec §3.9) asks Job Radar's own import function to create a job via the inbox write.
 - **Mailbox mutations: read / mark-read / move** per message, plus ONE removal path: the retention
   sweep (`agent/retention.py`, spec §3.8 / [R1]) — Social + Postings only (hard allow-list), older
   than N days by server date, read or unread, NOT starred, **moved to Trash** (never permanently
