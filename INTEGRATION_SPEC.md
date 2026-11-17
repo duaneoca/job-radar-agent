@@ -300,7 +300,7 @@ A dedicated **Settings → Email Agent** page is the single per-user home for th
 | **Agent key** — generate / revoke; show `key_hint` (last 4); plaintext shown once on create | `agent_api_keys` / `/agent/keys` |
 | **Email connection** — Gmail "Connect" (OAuth) or IMAP creds (cloud users); local self-host uses local `.env` | `email_credentials` `[C3/H5]` |
 | **Folder config** — root + subfolder names. The sorter (§3.7, when enabled) reads the **root** and files into all four; the link picker reads **Postings** and moves problems to **Unprocessed** | folder layout `[D6]` |
-| **Email policy (NEW, §3.6)** — allowed sender domains (list), require sender authentication (toggle, default on), what to do with emails that have no postings (mark read / move to Unprocessed) | `email_policy` in the cloud config |
+| **Email policy (NEW, §3.6)** — allowed sender domains (list), require sender authentication (toggle, default on), trusted authserv-ids (list, advanced — **required for users not on Gmail or Proton**, see §3.6), what to do with emails that have no postings (mark read / move to Unprocessed) | `email_policy` in the cloud config |
 | **Mailbox retention (NEW, §3.8)** — "Move to Trash after N days" for **Social** and **Postings** (each: off, or 1–365 days; suggested 14). Help text: read and unread mail older than N days goes to Trash; **starred mail is kept**; Interaction and Unprocessed are never cleaned; Trash is emptied by the mail provider (Gmail after 30 days; Proton when its "auto-delete unwanted messages" setting is on) | `retention` in the cloud config |
 | **Notifications** — Slack/Telegram/Discord channel + connect | notifier config `[D16]` |
 | **Agent status & stats** — last run / health + the per-user business stats | `agent_runs` + `GET /agent/stats` `[D21/Q8]` |
@@ -536,7 +536,8 @@ into postings. V2 costs ≈ $0.003/email with one small LLM call.
 **Pipeline (per email in the Postings folder):**
 1. **Screen (deterministic, before any LLM spend).** Sender domain must be on the allow-list, and the
    receiving server's topmost trusted `Authentication-Results` must show `dmarc=pass` for that domain.
-   Failure ⇒ move to Unprocessed.
+   "Trusted" means the header's authserv-id is in `trusted_authserv_ids` (below) — a user on neither
+   Gmail nor Proton must set it or everything fails the screen. Failure ⇒ move to Unprocessed.
 2. **Extract (deterministic).** Every `<a href>` becomes a numbered candidate: link text, a
    scheme-allowlisted URL, and nearby text bounded by the neighboring links.
 3. **Pick (one LLM call).** The model receives only the subject + the numbered list and returns
@@ -565,17 +566,48 @@ applicant-tracking-system links: Greenhouse, Lever, Ashby, Workday, …) · othe
 **Dual design — where state and policy live:**
 | Concern | Local agent (Proton) | Cloud agent |
 |---|---|---|
-| Sender allow-list / auth toggle / zero-postings action | `.env` (`ALLOWED_SENDER_DOMAINS`, `REQUIRE_SENDER_AUTH`, `ZERO_POSTINGS_ACTION`) | `email_policy` in the cloud config, set on the Email Agent settings page |
+| Sender allow-list / auth toggle / trusted authserv-ids / zero-postings action | `.env` (`ALLOWED_SENDER_DOMAINS`, `REQUIRE_SENDER_AUTH`, `TRUSTED_AUTHSERV_IDS`, `ZERO_POSTINGS_ACTION`) | `email_policy` in the cloud config, set on the Email Agent settings page |
 | Duplicate memory | SQLite in `<AGENT_HOME>/data/dedup.sqlite` (30-day window from last sighting) | Job Radar DB: `inbox_postings.dedup_key` (Phase B unique) |
 
 **`email_policy` shape (cloud config, all fields optional):**
 ```json
 { "allowed_sender_domains": ["linkedin.com", "glassdoor.com"],
   "require_sender_auth": true,
+  "trusted_authserv_ids": ["mx.example-corp.com"],
   "zero_postings_action": "mark_read" }
 ```
-Defaults when absent: the built-in job-board list, `true`, `mark_read`. `allowed_sender_domains: []`
-means *allow any sender*. Unknown `zero_postings_action` values fail the user's run loudly.
+Defaults when absent: the built-in job-board list, `true`, the built-in authserv-id list,
+`mark_read`. Unknown `zero_postings_action` values fail the user's run loudly.
+
+**`None` vs `[]` — the two list fields behave DIFFERENTLY, deliberately.** Getting this backwards
+silently disables a security control, so it is spelled out rather than inferred:
+
+| Value | `allowed_sender_domains` | `trusted_authserv_ids` |
+|---|---|---|
+| absent / `null` | built-in job-board list | built-in list (`mail.protonmail.ch`, `mx.google.com`) |
+| `[]` | **allow any sender** — a real setting, the filter is off | **built-in list** — same as absent |
+| non-empty | exactly these | exactly these |
+
+The asymmetry is intentional. An empty allow-list is a meaningful choice: *do not filter by sender*.
+An empty trust-list is not — it would mean *trust no mail server*, so with `require_sender_auth: true`
+every email on earth fails the screen and the entire mailbox goes to Unprocessed. No user means that,
+so the agent reads `[]` here as "unset" and keeps the defaults. Implementations must match
+`SenderPolicy.from_values`: `allowed is not None` for the domains, plain truthiness for the
+authserv-ids. If a user genuinely wants no sender authentication, the control for that is
+`require_sender_auth: false`, not an empty trust list.
+
+**`trusted_authserv_ids` — required for any user not on Gmail or Proton.** The screen step trusts a
+DMARC result only from an `Authentication-Results` header whose authserv-id is on this list,
+because the receiving MTA prepends its own header and an attacker can forge the ones below it. The
+built-in default is `mail.protonmail.ch` and `mx.google.com` — the two the project itself uses.
+
+A cloud user on **generic IMAP** (Fastmail, a work server, anything self-hosted) has neither, so
+with `require_sender_auth` on by default *every* email fails with "no DMARC result from a trusted
+mail server" and the whole mailbox lands in Unprocessed. The agent looks broken for a reason the
+user cannot see. Gmail and Proton users are unaffected, so this does not surface in a Gmail-only
+E2E — it waits for the first real IMAP user. Hence the field: a user whose provider is neither must
+be able to name their own MTA's authserv-id. It is an advanced setting; the UI may keep it behind a
+disclosure, but it has to exist. Validate it as hostnames, exactly like `allowed_sender_domains`.
 
 **Two-phase rollout (nothing breaks mid-deploy):**
 | Phase | Side | Change | Safe because |
