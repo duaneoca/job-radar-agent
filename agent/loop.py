@@ -48,6 +48,7 @@ def run_loop(*, once: bool, dry_run: bool, interval: int,
                 inbox_base_url=components.inbox_base_url, environment="local", dry_run=dry_run,
                 sort_stage=getattr(components, "sort_stage", None),
                 retention_stage=getattr(components, "retention_stage", None),
+                run_spool=getattr(components, "run_spool", None),
             )
             iterations += 1
             ts = time.strftime("%H:%M:%S")
@@ -58,7 +59,11 @@ def run_loop(*, once: bool, dry_run: bool, interval: int,
                       f"postings={res.postings_created} duplicates={res.duplicates_skipped} "
                       f"unprocessed={res.escalations} retries={res.retries}"
                       + (f" sorted={res.sorted}" if getattr(res, "sorted", None) else "")
-                      + (f" trashed={res.trashed}" if getattr(res, "trashed", None) else ""))
+                      + (f" trashed={res.trashed}" if getattr(res, "trashed", None) else "")
+                      + (f" spool_flushed={res.spool_flushed}"
+                         if getattr(res, "spool_flushed", 0) else "")
+                      + (f" spool_pending={res.spool_pending}"
+                         if getattr(res, "spool_pending", 0) else ""))
                 for e in res.errors[:10]:
                     print(f"    ! {e}")
             if once or _STOP["flag"]:

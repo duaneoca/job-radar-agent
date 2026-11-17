@@ -35,6 +35,7 @@ class Components:
     close: Callable[[], None]
     sort_stage: object = None     # SortStage over the root folder, when SORTER_ENABLED
     retention_stage: object = None  # RetentionStage (expired Social/Postings → Trash), when configured
+    run_spool: object = None      # RunSpool — LOCAL only; cloud infers reachability server-side
 
 
 def _build_provider():
@@ -92,6 +93,7 @@ def build_components() -> Components:
     writer = RestWriter(agent_settings.jobradar_api_url, agent_settings.agent_api_key)
     notifier = make_notifier()
     from .budget import DailySpendStore
+    from .run_spool import RunSpool
 
     def _close():
         for obj in (reader, writer, dedup, notifier, getattr(sort_stage, "jev", None)):
@@ -107,4 +109,7 @@ def build_components() -> Components:
         spend_store=DailySpendStore(), daily_ceiling=agent_settings.daily_spend_ceiling_usd,
         inbox_base_url=agent_settings.jobradar_api_url.replace("/api", ""), close=_close,
         sort_stage=sort_stage, retention_stage=retention_stage,
+        # Local gets a spool so an unreportable run is not lost. Cloud deliberately passes none:
+        # a pod disk is the wrong lifetime and a cross-user boundary (docs/run-record-spool.md).
+        run_spool=RunSpool(),
     )
