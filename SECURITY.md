@@ -122,8 +122,23 @@ email moved to Unprocessed, so subjects reach the notification channel (Slack/Te
 a fourth destination alongside the mailbox, the LLM API and Langfuse. Bodies and senders are not sent.
 This is a deliberate trade for a notification that says *which* mail needs review instead of only how
 many; it means the user-tier channel must be treated as holding email metadata, the same way the admin
-channel already holds trace links. Subjects are flattened to one line before sending, so a crafted
-header cannot forge extra entries in the message.
+channel already holds trace links.
+
+**Subjects are attacker-controlled input to a markup renderer**, so they are escaped for each
+channel's markup in `notifications/markup.py`, not merely flattened to one line. Whoever emails the
+user chooses the subject, and every channel renders its body as markup: unescaped, a subject could
+notify the whole channel (`<!channel>`, `<!here>`), ping a named person (`<@U…>`), render a
+trusted-looking labelled link to an attacker's URL (`<https://evil.example|Open your inbox>`), or
+forge bold/italic/code and inline links on Telegram and Discord. Unbalanced Telegram markup is also
+a denial of the user's own alerts: the Bot API rejects the whole message with HTTP 400, so a crafted
+subject could suppress the notification entirely. Slack bodies, fallback text and field values have
+`& < >` replaced with entities; Telegram and Discord bodies get their Markdown control characters
+backslash-escaped; the Discord webhook additionally sends `allowed_mentions: {"parse": []}` so no
+mention can notify anyone even if one survived. Escaping lives in the notifiers rather than in
+`dispatch`, because dispatch builds one body without knowing which channel will deliver it and the
+three escapes are mutually incompatible — the notifier is the only place that knows its own markup.
+This hardens every notification body, not only the new listing: admin bodies already embedded
+exception strings carrying email-derived text.
 
 ### H3 — Internal no-auth endpoints + flat cluster network
 **Phase:** JR-3, JR-5

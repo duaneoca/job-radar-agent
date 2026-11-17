@@ -9,6 +9,7 @@ from __future__ import annotations
 import httpx
 
 from .base import Notification
+from .markup import escape_discord
 
 
 class DiscordNotifier:
@@ -22,13 +23,18 @@ class DiscordNotifier:
 
     def send(self, n: Notification) -> None:
         url = self._admin if n.audience == "admin" else self._user
-        desc = n.body
+        desc = escape_discord(n.body)
         if n.link:
-            desc += f"\n{n.link_text}: {n.link}"
+            desc += f"\n{escape_discord(n.link_text)}: {n.link}"
         if n.buttons:  # webhooks can't render buttons — list choices as text
-            desc += "\n\nReply in the app to choose:\n" + "\n".join(f"• {b['text']}" for b in n.buttons)
-        embed = {"title": n.title[:256], "description": desc[:4000]}
+            desc += "\n\nReply in the app to choose:\n" + "\n".join(
+                f"• {escape_discord(b['text'])}" for b in n.buttons)
+        embed = {"title": escape_discord(n.title)[:256], "description": desc[:4000]}
         if n.fields:
-            embed["fields"] = [{"name": k, "value": v, "inline": True} for k, v in n.fields.items()][:25]
-        r = self._client.post(url, json={"embeds": [embed]})
+            embed["fields"] = [{"name": escape_discord(k), "value": escape_discord(v),
+                                "inline": True} for k, v in n.fields.items()][:25]
+        # Belt and braces behind the escaping: even if a mention survived, the webhook is not
+        # permitted to notify anyone.
+        r = self._client.post(url, json={"embeds": [embed],
+                                         "allowed_mentions": {"parse": []}})
         r.raise_for_status()

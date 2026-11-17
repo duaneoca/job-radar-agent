@@ -9,6 +9,7 @@ from __future__ import annotations
 import httpx
 
 from .base import Notification
+from .markup import escape_telegram
 
 
 class TelegramNotifier:
@@ -24,9 +25,13 @@ class TelegramNotifier:
 
     def send(self, n: Notification) -> None:
         chat = self._admin_chat if n.audience == "admin" else self._user_chat
-        text = f"*{n.title}*\n{n.body}" if n.body else f"*{n.title}*"
+        # parse_mode=Markdown below, so every piece of text that did not originate here is
+        # escaped. The `*` and `_` wrappers are ours and stay outside the escaping.
+        title, body = escape_telegram(n.title), escape_telegram(n.body)
+        text = f"*{title}*\n{body}" if n.body else f"*{title}*"
         if n.fields:
-            text += "\n" + "\n".join(f"_{k}_: {v}" for k, v in n.fields.items())
+            text += "\n" + "\n".join(f"_{escape_telegram(k)}_: {escape_telegram(v)}"
+                                     for k, v in n.fields.items())
         payload: dict = {"chat_id": chat, "text": text[:4000], "parse_mode": "Markdown"}
         if n.buttons:
             payload["reply_markup"] = {"inline_keyboard": [
