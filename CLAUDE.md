@@ -146,10 +146,15 @@ screen ─┬─ sender rejected ───────────────�
 
 ## Status
 
-Sorter (2026-09-29): built on `feat/jev-sorter`, 205 offline tests; eval on 231 real sorted emails:
-97 % auto-routed, 95 % label agreement (remainder = intended label drift). Not yet run in commit mode.
-Relay-sent recruiter mail is `recruiter_outreach` (job-radar #150 groups shared relays by person —
-§3.7 relay rule). Proton Bridge can desync (Repair fixes it).
+Sorter: built 2026-09-29 on `feat/jev-sorter`, 205 offline tests; eval on 231 real sorted emails:
+97 % auto-routed, 95 % label agreement (remainder = intended label drift). **Live in commit mode on
+the local production agent since October** — `SORTER_ENABLED=true`, routing and retention both
+running every 15 min. Relay-sent recruiter mail is `recruiter_outreach` (job-radar #150 groups
+shared relays by person — §3.7 relay rule). Proton Bridge can desync (Repair fixes it).
+
+Cloud is a different story: the sorter has **never** run there. `SORTER_ENABLED` in cloud is gated on
+§3.6 Phase A+B, because cloud uses `NullDedupStore` and the sorter emits a posting per recruiter
+email — the same req from five vendors would duplicate on every run.
 
 V2 built and verified on real mail (dry run, 10 emails: 10/10 verified first try, $0.029 total,
 18 s). ~150 offline tests. Open items: Job Radar Phase A/B for `dedup_key` + `email_policy` UI
