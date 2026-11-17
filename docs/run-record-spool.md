@@ -42,9 +42,17 @@ surface they have, and it is the one that goes quiet.
 1. **On `report_run` failure, write the record to a local spool** instead of discarding it, as
    newline-delimited JSON in `<AGENT_HOME>/data/pending_runs.jsonl`. The record is already built by
    `RunResult.as_run_record()`, so nothing new has to be computed.
-2. **At the start of the next run that reaches the server, flush the spool**: POST each record
+2. **Flush the spool immediately after a run's own `report_run` succeeds**: POST each record
    oldest-first, dropping each one that is accepted. A run that still cannot reach the server leaves
    the spool untouched and simply appends to it.
+
+   *Amended during implementation, from "at the start of the next run".* Flushing after the run's own
+   report is strictly better: a successful `report_run` is proof the server is reachable right now,
+   so the flush is attempted only when it can be expected to work. Flushing at run start would spend
+   attempts — and, on a slow or half-open connection, wall-clock time — before anything had
+   established reachability, in precisely the outage conditions the spool exists for. The flush also
+   stops at the first failure and keeps the remainder, so a server that fails mid-flush costs one
+   attempt rather than one per record.
 3. **Bound it, both ways.** A record older than **7 days** is dropped (a month-old run record has
    little value), AND the spool is capped at **500 records**, oldest dropped first. Whichever bound
    bites, the number of records dropped is reported in the next successful record, so the loss is
