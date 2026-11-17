@@ -1,6 +1,7 @@
 # Design note — spooling run records when Job Radar is unreachable
 
-**Status:** proposal, not implemented. Design approval needed before any code.
+**Status:** design approved 2026-11-17. Local spool implementation pending; server side assigned
+to Job Radar. The decisions below are settled, not open.
 **Date:** 2026-11-17
 **Problem owner:** the user looking at their dashboard during an outage.
 
@@ -44,9 +45,10 @@ surface they have, and it is the one that goes quiet.
 2. **At the start of the next run that reaches the server, flush the spool**: POST each record
    oldest-first, dropping each one that is accepted. A run that still cannot reach the server leaves
    the spool untouched and simply appends to it.
-3. **Bound it.** Cap the spool (suggest 500 records, oldest dropped first) so a long outage cannot
-   grow a file without limit, and record the drop count in the next successful record so the loss is
-   itself reported rather than silent.
+3. **Bound it, both ways.** A record older than **7 days** is dropped (a month-old run record has
+   little value), AND the spool is capped at **500 records**, oldest dropped first. Whichever bound
+   bites, the number of records dropped is reported in the next successful record, so the loss is
+   itself visible rather than silent.
 4. **Never let spooling fail a run.** Every spool read/write wrapped so that a full disk or a
    read-only volume degrades to today's behaviour — a lost record — rather than turning a network
    failure into a crash.
@@ -55,16 +57,22 @@ Records carry `started_at` / `finished_at` already, so a flushed record is still
 it happened; it is late, not wrong. The server must therefore accept a record whose timestamps are
 in the past, which it does today.
 
+A flushed record additionally carries **`late: true`**, a new optional boolean on
+`POST /agent/runs` (absent means `false`). It lets the dashboard distinguish "reported on time" from
+"backfilled after an outage" without inferring it from clock skew. Added to `INTEGRATION_SPEC.md`
+alongside the implementation.
+
 ## What the cloud needs that local does not
 
-This is the part needing a decision, not just implementation:
+This was the part needing a decision rather than implementation; it is now decided — cloud does
+not spool.
 
 - **The spool is per user, but the disk is per pod.** A CronJob pod is ephemeral and shared across
   users, so a pod-local file is both the wrong lifetime and a cross-user data boundary — one user's
   run records sitting in a path another user's iteration can read. Either the spool is keyed by
   `user_id` and stored somewhere durable per user, or cloud skips spooling and solves visibility
-  server-side instead.
-- **Server-side is probably the better answer for cloud.** If the agent cannot report, the server
+  server-side instead. **Decided: cloud skips spooling.**
+- **Server-side is the answer for cloud.** If the agent cannot report, the server
   can still notice: `agent_runs` has a last-seen timestamp per user, so job-radar can infer
   "unreachable" from absence without the agent telling it anything. That requires no new agent state
   and no cross-user file, and it also covers the case where the agent is not running at all — which
@@ -76,23 +84,38 @@ This is the part needing a decision, not just implementation:
 
 - A per-user state derived from the newest `agent_runs` row: healthy / **unreachable since `<ts>`** /
   never connected.
-- Threshold tied to the user's own schedule rather than a constant: unreachable once more than, say,
-  three expected intervals have passed with no row. A 15-minute local schedule and a daily cloud
-  schedule should not share a timeout.
+- Threshold derived from the user's own cadence rather than a constant: the server takes the
+  **median interval of the last ~20 `agent_runs` rows** and flags unreachable after **3 missed
+  intervals**, with a **floor of 1 hour** so a jittery or very frequent schedule cannot raise a
+  false alarm. Cloud uses its CronJob interval directly, which it already knows. A 15-minute local
+  schedule and a daily cloud schedule must not share a timeout, and neither needs a user setting.
 - A late-arriving flushed record backfills the history, so the gap closes retroactively and the
   outage remains visible as a period rather than vanishing.
 - Not a notification. The agent already notifies the admin tier on failure; the dashboard's job here
   is the honest resting state, and an outage that has already ended should not page anyone.
 
-## Open questions for review
+## Decisions (settled on review, 2026-11-17)
 
-1. Spool for local only, with cloud visibility inferred server-side — agreed, or spool in both?
-2. Is 500 records / oldest-dropped-first the right bound, or should it be time-based (drop anything
-   older than 7 days, since a month-old run record has little value)?
-3. Does job-radar want a `late: true` marker on a flushed record, so the dashboard can distinguish
-   "reported on time" from "backfilled after an outage"?
-4. Unreachable thresholds are a per-user setting in principle. Operator-capped, like
-   `max_email_age_days` in §3.9, or fixed by schedule?
+1. **Spool for local, infer for cloud.** Cloud does not spool, for the reasons above — the pod disk
+   is the wrong lifetime and a cross-user boundary.
+2. **Both bounds:** drop older than 7 days and cap at 500, oldest first, with the drop count carried
+   in the next successful record.
+3. **`late: true`** on a flushed record; an optional field on `POST /agent/runs`, absent = `false`.
+4. **Unreachable thresholds are fixed by schedule and operator-only** — no per-user setting for now.
+   The server has no reliable knowledge of a local agent's schedule, so it **infers the cadence from
+   the user's own recent history**: the median interval of the last ~20 `agent_runs` rows, flagging
+   unreachable after 3 missed intervals, with a floor of 1 hour so a jittery or very frequent
+   schedule cannot produce a false alarm. Cloud uses the CronJob interval directly, which it knows.
+
+   This supersedes the "tied to the user's own schedule" sketch above: the mechanism is a median of
+   observed intervals, not a configured value.
+
+## Split of work
+
+- **This repo (agent):** the local spool — write on `report_run` failure, flush oldest-first,
+  enforce both bounds, never fail a run — plus the `late` field in `INTEGRATION_SPEC.md`.
+- **Job Radar (server):** accept `late` on `POST /agent/runs`, derive the per-user reachability state
+  from `agent_runs`, and render it on the dashboard.
 
 ## Not in scope
 
