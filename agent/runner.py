@@ -224,6 +224,10 @@ def run_once(
                 "message_id": email.get("message_id"),
                 "subject": (email.get("subject") or "")[:60],
                 "outcome": final.get("outcome"),
+                # Recorded so the notifier can list WHICH emails were escalated. `outcome` is not a
+                # proxy: `no_postings` only moves to Unprocessed when ZERO_POSTINGS_ACTION says so,
+                # so keying off it would over-count against `escalations`.
+                "destination": final.get("destination"),
                 "postings": final.get("postings_written", 0),
                 "duplicates": final.get("duplicates_skipped", 0),
                 "attempts": final.get("attempts", 0),

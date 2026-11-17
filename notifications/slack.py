@@ -9,6 +9,7 @@ from __future__ import annotations
 import httpx
 
 from .base import Notification
+from .markup import escape_slack
 
 
 class SlackNotifier:
@@ -31,9 +32,13 @@ class SlackNotifier:
             {"type": "header", "text": {"type": "plain_text", "text": n.title[:150]}},
         ]
         if n.body:
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": n.body[:3000]}})
+            # mrkdwn renders mentions and links, so the body — which carries email subjects — is
+            # escaped. The header above is plain_text and is not parsed, so it needs nothing.
+            blocks.append({"type": "section",
+                           "text": {"type": "mrkdwn", "text": escape_slack(n.body)[:3000]}})
         if n.fields:
-            flds = [{"type": "mrkdwn", "text": f"*{k}:*\n{v}"} for k, v in list(n.fields.items())[:10]]
+            flds = [{"type": "mrkdwn", "text": f"*{escape_slack(k)}:*\n{escape_slack(v)}"}
+                    for k, v in list(n.fields.items())[:10]]
             blocks.append({"type": "section", "fields": flds})
         if n.buttons:
             blocks.append({"type": "actions", "elements": [
@@ -51,7 +56,8 @@ class SlackNotifier:
     def send(self, n: Notification) -> None:
         channel = self._admin_channel if n.audience == "admin" else self._user_channel
         r = self._client.post("/chat.postMessage", json={
-            "channel": channel, "text": n.title, "blocks": self._blocks(n),
+            # `text` is the notification fallback and IS parsed for mentions — escape it too.
+            "channel": channel, "text": escape_slack(n.title), "blocks": self._blocks(n),
         })
         r.raise_for_status()
         data = r.json()
