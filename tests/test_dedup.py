@@ -84,3 +84,42 @@ def test_null_and_read_only_stores(tmp_path):
     ro = ReadOnlyDedupStore(inner)
     ro.add(["new"])
     assert ro.seen("seen-before") and not inner.seen("new")
+
+
+# ── key length cap (INTEGRATION_SPEC §3.6: server column is String(300)) ──
+
+def test_normal_keys_are_untouched_by_the_cap():
+    from agent.dedup import dedup_key
+    assert dedup_key("https://x.test/a", "Acme", "Forward Deployed Engineer") == \
+        "ct:acme|forward deployed engineer"
+    assert dedup_key("https://www.linkedin.com/jobs/view/4457198691/", "", "") == \
+        "linkedin:4457198691"
+
+
+def test_long_key_is_capped_to_the_server_column_width():
+    from agent.dedup import MAX_DEDUP_KEY, dedup_key
+    key = dedup_key("", "C" * 400, "T" * 400)
+    assert len(key) == MAX_DEDUP_KEY
+    assert key.startswith("ct:ccc")
+
+
+def test_capping_keeps_distinct_long_keys_distinct():
+    """A plain truncation would collide here: both share the first 300 chars.
+    Phase B skips a conflicting posting, so a collision silently drops a real job."""
+    from agent.dedup import dedup_key
+    a = dedup_key("", "C" * 400, "T" * 400)
+    b = dedup_key("", "C" * 400, "T" * 401)
+    assert a[:280] == b[:280]          # same prefix
+    assert a != b                      # different key
+
+
+def test_cap_is_deterministic():
+    from agent.dedup import dedup_key
+    assert dedup_key("", "C" * 400, "T" * 400) == dedup_key("", "C" * 400, "T" * 400)
+
+
+def test_long_ats_url_key_is_capped_too():
+    from agent.dedup import MAX_DEDUP_KEY, dedup_key
+    key = dedup_key("https://boards.greenhouse.io/" + "seg/" * 200, "Acme", "Engineer")
+    assert len(key) <= MAX_DEDUP_KEY
+    assert key.startswith("url:boards.greenhouse.io")
