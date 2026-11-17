@@ -430,9 +430,27 @@ Server: if `matched_review_id` present AND `new_status` in the writable subset �
   "finished_at": "2026-06-10T14:00:42Z",
   "emails_processed": 7, "postings_created": 12,
   "interactions_recorded": 2, "escalations": 1, "retries": 3,
-  "error_summary": null
+  "error_summary": null,
+  "late": false
 }
 ```
+
+**`late` (NEW, optional; absent means `false`).** `true` marks a record the agent could not report
+when the run happened and is backfilling now. It arises because reporting a run needs the same
+network connection the run itself needed: when Job Radar is unreachable, `POST /agent/runs` fails for
+the same reason the run failed, so the record was spooled locally and sent by a later run. Measured
+on the local agent, 283 of 298 lifetime failures reported nothing at all, leaving no row and making
+an outage indistinguishable from a quiet mailbox.
+
+`started_at` / `finished_at` still describe when the run actually happened, so a late record is
+accurate, merely delayed — the server must accept timestamps in the past, as it already does. The
+flag exists so the dashboard can tell "reported on time" from "backfilled after an outage" without
+inferring it from clock skew, and so a gap in the history closes retroactively rather than vanishing.
+
+**Local only.** The spool is a local-agent mechanism; a cloud pod's disk is the wrong lifetime for
+per-user state and a cross-user boundary besides, so cloud agents never send `late` and cloud
+reachability is derived server-side from the absence of recent rows instead — which also covers an
+agent that is not running at all. See `docs/run-record-spool.md`.
 
 ### 3.5 Recruiter contact (recruiter_outreach only; V1, revived by the sorter — §3.7) `[D22 extract / D23 linkage]`
 

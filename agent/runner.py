@@ -30,6 +30,16 @@ from .state import Destination
 from .writer import JobRadarWriter
 
 
+def _spool_age_days() -> int:
+    from .run_spool import MAX_AGE_DAYS
+    return MAX_AGE_DAYS
+
+
+def _spool_cap() -> int:
+    from .run_spool import MAX_RECORDS
+    return MAX_RECORDS
+
+
 @dataclass
 class RunResult:
     status: str = "success"                 # success | partial | failed
@@ -44,6 +54,8 @@ class RunResult:
     trashed: dict = field(default_factory=dict)          # retention: logical folder → count
     errors: list[str] = field(default_factory=list)
     skipped: bool = False                   # lock held
+    spool_flushed: int = 0                  # run records from earlier failed runs reported now
+    spool_pending: int = 0                  # still unreported after this run
     details: list[dict] = field(default_factory=list)
 
     def as_run_record(self, environment: str, agent_version: str,
@@ -132,6 +144,7 @@ def run_once(
     spend_store=None,
     sort_stage=None,
     retention_stage=None,
+    run_spool=None,
 ) -> RunResult:
     from notifications import dispatch as _dispatch
     from notifications.base import NullNotifier
@@ -272,10 +285,31 @@ def run_once(
             result = RunResult(status="failed", errors=["interrupted before completion"])
         if not result.skipped and not dry_run:
             finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            # A silent loss becomes a stated one: records the spool's bounds discarded since the
+            # last report are named in this record, which already has a free-form error summary.
+            if run_spool is not None:
+                lost = run_spool.take_dropped()
+                if lost:
+                    result.errors.append(
+                        f"{lost} unreported run record(s) dropped from the spool "
+                        f"(older than {_spool_age_days()} days, or over the {_spool_cap()} cap)")
+            record = result.as_run_record(environment, agent_version, started, finished)
             try:
-                writer.report_run(result.as_run_record(environment, agent_version, started, finished))
+                writer.report_run(record)
             except Exception as exc:
                 result.errors.append(f"report_run failed: {exc}")
+                # Reporting needs the same network the run needed, so this failure is usually the
+                # run's own cause repeating. Keep the record instead of losing it; the next run
+                # that reaches the server flushes it. Local only — cloud passes no spool.
+                if run_spool is not None:
+                    run_spool.add(record)
+                    result.spool_pending = len(run_spool.pending())
+            else:
+                # The server is demonstrably reachable, so drain anything earlier runs spooled.
+                if run_spool is not None:
+                    # Counted on the result rather than appended to `errors`: a successful
+                    # backfill is news, not a fault, and `errors` prints as "! …".
+                    result.spool_flushed, result.spool_pending = run_spool.flush(writer.report_run)
         if lf is not None:
             try:
                 lf.flush()
