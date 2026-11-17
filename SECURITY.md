@@ -117,6 +117,13 @@ ownership of every `review_id` / `hitl_id` / `inbox_id` at use time.
 Langfuse holds email content. Control admin-channel membership. Fix the README privacy claims.
 **Agent V2 (2026-09):** the LLM and Langfuse no longer receive email bodies — only the subject and the
 extracted link texts/nearby text (a few KB instead of up to 150 KB). Still disclosed, much smaller.
+**Notifications (2026-11):** the user-tier review notification now lists the **subject line** of each
+email moved to Unprocessed, so subjects reach the notification channel (Slack/Telegram/Discord) too —
+a fourth destination alongside the mailbox, the LLM API and Langfuse. Bodies and senders are not sent.
+This is a deliberate trade for a notification that says *which* mail needs review instead of only how
+many; it means the user-tier channel must be treated as holding email metadata, the same way the admin
+channel already holds trace links. Subjects are flattened to one line before sending, so a crafted
+header cannot forge extra entries in the message.
 
 ### H3 — Internal no-auth endpoints + flat cluster network
 **Phase:** JR-3, JR-5
