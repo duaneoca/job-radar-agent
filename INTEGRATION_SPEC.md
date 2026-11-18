@@ -79,7 +79,7 @@ set BOTH `ondelete="CASCADE"` on the column AND `cascade="all, delete-orphan"` o
 | user_id | UUID FK | |
 | company | text | |
 | role | text | |
-| link | text null | http/https ONLY, validated server-side `[C2]` |
+| link | text null | http/https ONLY, validated server-side `[C2]`. Per-recipient bulk-mail endpoints (opt-out, auto-response, candidate lookup, or any URL whose query carries the user's address) are never sent — see SECURITY.md M2b. `null` is normal. |
 | action_required | bool | |
 | possible_duplicate | bool | fuzzy company+role match flag, never blocks `[D12]` |
 | matched_review_id | UUID null | FK → user_job_reviews if dup suspected |
