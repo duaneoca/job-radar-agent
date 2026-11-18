@@ -240,3 +240,20 @@ def test_hiring_company_dropped_when_it_is_the_location():
 def test_head_fragments_still_carry_the_role():
     frags = head_fragments(SUBJECT, head_lines(BODY), clean_name(SENDER))
     assert "Staff Platform Engineer" in frags
+
+
+# ── the anchor must not shrink the window when the name comes last ──
+
+def test_name_as_the_final_line_falls_back_to_the_tail():
+    """Anchoring on the last line would leave a one-line window and lose the block above it."""
+    body = ("Hi Duane,\n\nA Staff Engineer role with our client.\n\n"
+            "Example Staffing Inc\n\nPhone : +1 555 010 4341\n\nBest regards, Riya Example\n")
+    sig = signature_lines(body, "Riya Example")
+    assert any("Example Staffing Inc" in ln for ln in sig)
+    assert sig == signature_lines(body)
+
+
+def test_anchor_still_used_when_it_yields_a_usable_block():
+    body = "Hi\n\nRole below.\n\nRiya Example\nSr. Recruiter\nExample Staffing Inc\nPhone: 555\n"
+    sig = signature_lines(body, "Riya Example")
+    assert sig[0] == "Riya Example" and "Sr. Recruiter" in sig

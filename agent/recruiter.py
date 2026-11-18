@@ -49,7 +49,8 @@ FREE_MAIL = ("gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "aol.com", 
 
 CAPS = {"name": 200, "email": 255, "phone": 50, "employer": 200, "title": 200, "linkedin_url": 500,
         "role": 200, "company": 200, "location": 200}
-SIGNATURE_LINES = 15          # non-empty lines at the end of the newest message
+SIGNATURE_LINES = 15          # non-empty lines of the sender's sign-off block
+MIN_ANCHORED_LINES = 3        # below this, the name sits at the very end — use the tail instead
 HEAD_LINES = 8                # first non-empty lines of the newest message: where the pitch is
 DESCRIPTION_CAP = 12_000      # chars of the newest message sent as the posting's description
 MAX_FRAGMENTS = 24
@@ -150,7 +151,12 @@ def signature_lines(body_text: str, name: str | None = None) -> list[str]:
     lines = [ln.strip() for ln in text.splitlines()
              if ln.strip() and not ln.lstrip().startswith(">")]
     if name and (i := _signature_anchor(lines, name)) is not None:
-        return lines[i:i + SIGNATURE_LINES]
+        anchored = lines[i:i + SIGNATURE_LINES]
+        # A sign-off that ENDS with the name ("… / Phone / Best regards, Pat Example") anchors on
+        # the last line and yields a window of one. The tail is a superset of whatever the anchor
+        # would have found, so falling back to it can only add lines, never lose them.
+        if len(anchored) >= MIN_ANCHORED_LINES:
+            return anchored
     return lines[-SIGNATURE_LINES:]
 
 
