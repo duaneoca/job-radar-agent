@@ -197,6 +197,22 @@ sender). Safe HTML parser, external entity resolution disabled.
 Extract-and-surface only. Any agent URL fetch = SSRF + malware retrieval; inside EC2 it could reach
 the cloud metadata endpoint. Make "agent never visits links" an explicit, tested invariant.
 
+### M2b — Bulk-mail URLs that identify the recipient
+**Phase:** A-3
+A recruiter's mass mailing carries URLs that act **on behalf of the reader**: opt-out links, an
+"interested in this position?" auto-response endpoint, and the recruiter's own candidate-record
+lookup. They are per-recipient by construction — one observed opt-out URL carried the user's email
+address hex-encoded in a query value — and none of them is a job page.
+
+Stored as a posting's `link`, such a URL puts the user's identity into a job record, hands anyone
+with access to that record a one-click action taken as the user, and (with M2) is a URL we must
+never dereference but have nonetheless kept. `agent/extract.py:is_personal_endpoint` drops them
+from the candidate list, so they reach neither Job Radar nor the prompt the model is shown: matched
+on the host+path (`optout`, `unsubscribe`, `emailmerge`, candidate-lookup forms) and on any query
+carrying an email address, plain, percent-encoded or hex-encoded.
+
+Dropping them costs nothing: a posting with no link is normal and expected (§3.5).
+
 ### M3 — Secrets / PII in the public portfolio repo
 **Phase:** A-1, ongoing
 Public repo risks committing `.env`, Langfuse keys, an agent key, and especially the real example

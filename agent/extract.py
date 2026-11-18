@@ -21,7 +21,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from .links import clean_link
 
@@ -160,6 +160,27 @@ def _from_html(html: str, chars: int) -> list[tuple[str, str, str]]:
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"']+")
 
+# Sentence punctuation that cannot end a URL. In HTML the href attribute delimits itself, but a URL
+# scanned out of plain text runs to the next space — so "see (https://x.test/a)." yields the URL
+# with ")." glued on, and every consumer then holds a link that 404s.
+_TRAILING = ".,;:!?'\"\u00bb)]}>"
+_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
+_OPENERS = {v: k for k, v in _CLOSERS.items()}
+
+
+def trim_url(url: str) -> str:
+    """`url` without the sentence punctuation that followed it in the prose.
+
+    A closing bracket is kept when the URL opens one itself, so a path like
+    `/wiki/Example_(disambiguation)` survives while `(https://x.test/a)` loses the wrapper.
+    """
+    while url and url[-1] in _TRAILING:
+        opener = _CLOSERS.get(url[-1])
+        if opener and url.count(opener) >= url.count(url[-1]):
+            break
+        url = url[:-1]
+    return url
+
 
 def _from_text(text: str, chars: int) -> list[tuple[str, str, str]]:
     """Plain-text email fallback: the link text is the rest of the URL's line."""
@@ -167,10 +188,57 @@ def _from_text(text: str, chars: int) -> list[tuple[str, str, str]]:
     lines = (text or "").splitlines()
     for i, line in enumerate(lines):
         for m in _URL_IN_TEXT.finditer(line):
-            label = norm(line.replace(m.group(0), " "))
+            url = trim_url(m.group(0))
+            if not url:
+                continue
+            start, end = m.start(), m.start() + len(url)
+            # "… please click here (URL)." — drop the brackets that wrapped the URL as well, so the
+            # label is the sentence and not the sentence plus a dangling "(". That stray bracket is
+            # how this path came to look like an apply link: see pick_link in agent/recruiter.py.
+            opener = line[start - 1] if start else ""
+            if opener in _OPENERS and line[end:end + 1] == _OPENERS[opener]:
+                start, end = start - 1, end + 1
+            label = norm(line[:start] + " " + line[end:])
             around = norm(" ".join(lines[max(0, i - 1): i + 2]))
-            out.append((m.group(0), label, around[: chars * 2]))
+            out.append((url, label, around[: chars * 2]))
     return out
+
+
+# ── per-recipient endpoints: never a job posting, and they carry the reader's identity ──
+# A bulk-mail URL that acts on behalf of THIS recipient (opt out, auto-respond to a posting, open
+# the recruiter's record of them) identifies the user and does something when dereferenced. None of
+# them is a job page, so dropping them costs nothing and keeps the user's address out of what we
+# store in Job Radar and out of the candidate list the model sees.
+_PERSONAL_PATH = re.compile(
+    r"optout|opt[-_]out|unsubscribe|unsub\b|emailmerge|email_merge|preferences?[-_]cent"
+    r"|open_cand|candnocell|cand(?:idate)?[-_]?lookup|lookup[-_]?cand|/profile/response",
+    re.I)
+_EMAIL_IN_TEXT = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_HEXISH = re.compile(r"^(?:[0-9a-fA-F]{2}){10,}$")
+
+
+def _decodes_to_an_address(value: str) -> bool:
+    """True when a query value is a hex-encoded email address — how one bulk mailer carries it."""
+    if not _HEXISH.match(value):
+        return False
+    try:
+        return bool(_EMAIL_IN_TEXT.search(bytes.fromhex(value).decode("utf-8", "ignore")))
+    except ValueError:
+        return False
+
+
+def is_personal_endpoint(url: str) -> bool:
+    """True for a URL that is about the RECIPIENT rather than about a job."""
+    parts = urlsplit(url or "")
+    if _PERSONAL_PATH.search(f"{parts.netloc}{parts.path}"):
+        return True
+    query = parts.query
+    if not query:
+        return False
+    # The address may be plain, percent-encoded, or hex-encoded inside a value.
+    if _EMAIL_IN_TEXT.search(unquote(query)):
+        return True
+    return any(_decodes_to_an_address(v) for v in re.split(r"[=&;]", query))
 
 
 def extract_links(html: str, text: str = "", *, max_links: int = MAX_LINKS,
@@ -182,6 +250,8 @@ def extract_links(html: str, text: str = "", *, max_links: int = MAX_LINKS,
     for href, label, context in raw:
         url = clean_link(href)
         if not url or not label or label.casefold() in _BOILERPLATE:
+            continue
+        if is_personal_endpoint(url):
             continue
         if (label, url) in seen:
             continue
