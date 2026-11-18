@@ -65,8 +65,30 @@ def test_employment_type(text, label):
     ("100% Remote", "Remote"),
     ("Hybrid - 3 days on-site/week", "Hybrid"),
     ("Onsite in Sunnyvale", "On-site"),
-    ("Remote OK but on-site preferred", "On-site"),
     ("Santa Clara, CA", None),
+    # One signal each way, with no "hybrid" to reconcile them, is a contradiction. This used to
+    # answer "On-site", which is how an agency footer's "on-site and off-site resources" overrode
+    # a pitch headed "Locations: Remote". Saying nothing beats asserting the wrong one.
+    ("Remote OK but on-site preferred", None),
+    ("fully remote; candidates must attend on-site interviews", None),
+    # "Hybrid" is an explicit mix, so the words it brings with it are not a contradiction.
+    ("Hybrid: 3 days remote, 2 days on-site", "Hybrid"),
 ])
 def test_work_mode(text, mode):
+    assert work_mode(text) == mode
+
+
+@pytest.mark.parametrize("text,mode", [
+    ("Locations: Remote\nWe combine local on-site and off-site resources", "Remote"),
+    ("Location : Onsite\nRemote work is not available", "On-site"),
+    ("Work mode - Hybrid\n100% remote candidates will not be considered", "Hybrid"),
+    ("Workplace: Remote\non-site", "Remote"),
+    ("Job Location: Austin, TX\nWork Type: Remote\nsome on-site travel", "Remote"),
+    # A labelled line that names no mode is skipped, not treated as an answer.
+    ("Location: Austin, TX\n100% Remote", "Remote"),
+    # Not a labelled field: the label must be followed by the colon.
+    ("Mode of Hiring : Full-time roles\nRemote", "Remote"),
+])
+def test_work_mode_labelled_field_wins(text, mode):
+    """A labelled field is the pitch's own statement; free text elsewhere is incidental."""
     assert work_mode(text) == mode

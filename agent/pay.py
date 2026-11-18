@@ -45,6 +45,12 @@ _EMPLOYMENT = [   # first match wins; most specific first
 _HYBRID = re.compile(r"\bhybrid\b", re.I)
 _ONSITE = re.compile(r"\bon[\s-]?site\b|\bin[\s-]office\b", re.I)
 _REMOTE = re.compile(r"\bremote\b|\bwork\s+from\s+home\b|\bWFH\b", re.I)
+# A line whose LABEL states where/how the job is worked: "Locations: Remote", "Work mode - Hybrid".
+# The colon (or dash) must follow the label immediately, so "Mode of Hiring : Full-time" is not one.
+_MODE_LABEL = re.compile(
+    r"^[^\S\n]*(?:work\s*(?:mode|type|place|location|setting|arrangement)|workplace|work[\s-]*site"
+    r"|locations?|job\s*(?:location|site)|mode|setting)\s*[:\-\u2013\u2014]\s*(.+)$",
+    re.I | re.M)
 
 
 @dataclass(frozen=True)
@@ -128,13 +134,42 @@ def employment_type(text: str) -> str | None:
     return None
 
 
-def work_mode(text: str) -> str | None:
-    """'Hybrid' / 'On-site' / 'Remote' — hybrid and on-site win over a stray 'remote'."""
-    t = text or ""
-    if _HYBRID.search(t):
+def _mode_in(fragment: str) -> str | None:
+    """Hybrid > On-site > Remote within ONE fragment, where a mix is a real mix, not a conflict."""
+    if _HYBRID.search(fragment):
         return "Hybrid"
-    if _ONSITE.search(t):
+    if _ONSITE.search(fragment):
         return "On-site"
-    if _REMOTE.search(t):
+    if _REMOTE.search(fragment):
+        return "Remote"
+    return None
+
+
+def work_mode(text: str) -> str | None:
+    """'Hybrid' / 'On-site' / 'Remote', or None when the text does not say.
+
+    A LABELLED field wins over free text. The whole pitch is searched for work-mode words, and a
+    recruiter's footer routinely contains some: "combines local on-site and off-site resources" in
+    an agency's About blurb used to outrank the pitch's own "Locations: Remote" and file a remote
+    role as On-site. So the labelled lines are read first, in order, and the first one that names a
+    mode decides.
+
+    With no labelled line, the old priority scan still applies — except that 'remote' and 'on-site'
+    both appearing, with no 'hybrid' to reconcile them, now yields None. The text contradicts
+    itself; saying nothing is better than asserting the wrong one, because the caller turns this
+    into a posting field the user reads as fact.
+    """
+    t = text or ""
+    for m in _MODE_LABEL.finditer(t):
+        if (mode := _mode_in(m.group(1))):
+            return mode
+    if _HYBRID.search(t):                   # explicitly mixed — not a contradiction
+        return "Hybrid"
+    onsite, remote = bool(_ONSITE.search(t)), bool(_REMOTE.search(t))
+    if onsite and remote:
+        return None
+    if onsite:
+        return "On-site"
+    if remote:
         return "Remote"
     return None

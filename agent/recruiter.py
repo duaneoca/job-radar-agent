@@ -73,6 +73,28 @@ _SPLIT = re.compile(r"\s*(?:\||•|·|•|;)\s*")
 # "Forward Deployed Engineer | Mountain View, CA / NYC | On-site". Split on all of them.
 _HEAD_SPLIT = re.compile(r"\s*(?:\||::|--+|–|—|•|·|;|@|\[|\]|\(|\)|\s-\s|\s/\s|:\s)\s*")
 _URLISH = re.compile(r"https?://|www\.|\[link\]", re.I)
+# A postal address is never the company's name, but it survives fragment cleaning (it is not mostly
+# digits) and a signature often carries no other pickable fragment — so it won the employer pick and
+# became a posting's company. Withheld from the company questions ONLY: a city/state fragment is a
+# legitimate answer to "where is the job", so job_location still sees everything.
+_ADDRESSISH = re.compile(
+    r"^\s*addr(?:ess)?\s*[:\-]"                                  # labelled "Address: …"
+    r"|,\s*[A-Za-z]{2}\.?\s+\d{5}(?:-\d{4})?\b"                  # "Iselin, NJ 08830"
+    r"|\b(?:suite|ste|apt|unit|fl|floor|bldg|building)\.?\s*#?\s*\d"   # "Suite # 308"
+    r"|\b\d+\s+(?:[\w.\'-]+\s+){0,4}"
+    r"(?:ave|avenue|st|street|rd|road|blvd|boulevard|dr|drive|ln|lane|way|pkwy|parkway"
+    r"|hwy|highway|ct|court|pl|place|plaza|ter|terrace)\b",         # "99 Wood Ave"
+    re.I)
+
+
+def looks_like_address(fragment: str) -> bool:
+    return bool(_ADDRESSISH.search(fragment or ""))
+
+
+def _company_options(options: dict[str, str]) -> dict[str, str]:
+    """`options` minus the address-like ones. Keys keep their original numbering, so `_pick` still
+    resolves a choice back to the right fragment by index."""
+    return {k: v for k, v in options.items() if not looks_like_address(v)}
 
 
 def _cap(field: str, value: str | None) -> str | None:
@@ -95,8 +117,31 @@ def clean_name(sender: str) -> str | None:
     return name
 
 
-def signature_lines(body_text: str) -> list[str]:
-    """Last non-empty lines of the newest message (quoted history cut)."""
+def _signature_anchor(lines: list[str], name: str) -> int | None:
+    """Index of the LAST line that is the sender's name — where their sign-off block starts.
+
+    A fixed tail is the wrong window for agency mail: this sender's real signature (title, company,
+    phone) sat above ~14 lines of EEO notice, unsubscribe and candidate-lookup boilerplate, so the
+    last 15 lines held no company at all and the only pickable fragment was the street address —
+    which then became the posting's company. The name is the reliable landmark: it is the first
+    line of the sign-off, and the legal tail never repeats it on a line of its own.
+
+    The LAST occurrence is taken, so a name that also appears in the pitch does not win.
+    """
+    key = name.strip().lower()
+    if not key:
+        return None
+    for i in range(len(lines) - 1, -1, -1):
+        ln = lines[i].strip().lower().rstrip(",:;-")
+        # Equal, or the name followed by a decoration ("Shakti Singh | Sr. Recruiter"). Not a mere
+        # substring: the unsubscribe URLs carry the name URL-encoded inside a long line.
+        if ln == key or (ln.startswith(key) and len(ln) <= len(key) + 40):
+            return i
+    return None
+
+
+def signature_lines(body_text: str, name: str | None = None) -> list[str]:
+    """The sender's sign-off block: `SIGNATURE_LINES` lines from their name, else the last ones."""
     text = body_text or ""
     m = _REPLY_MARKERS.search(text)
     if m:
@@ -104,6 +149,8 @@ def signature_lines(body_text: str) -> list[str]:
     text = re.sub(r"&nbsp;?", " ", html.unescape(text), flags=re.I)
     lines = [ln.strip() for ln in text.splitlines()
              if ln.strip() and not ln.lstrip().startswith(">")]
+    if name and (i := _signature_anchor(lines, name)) is not None:
+        return lines[i:i + SIGNATURE_LINES]
     return lines[-SIGNATURE_LINES:]
 
 
@@ -213,7 +260,7 @@ def build_card_and_posting(jev, email: dict) -> tuple[dict | None, dict | None]:
     sender = email.get("sender") or ""
     name = clean_name(sender)
     body = email.get("body_text") or ""
-    lines = signature_lines(body)
+    lines = signature_lines(body, name)
     sig = "\n".join(lines)
     domain = sender_domain(sender)
     heads = head_lines(body)
@@ -251,7 +298,7 @@ def build_card_and_posting(jev, email: dict) -> tuple[dict | None, dict | None]:
             questions["employer"] = choice(
                 "Which fragment of the email signature is the name of the company the sender works for? "
                 "Answer 'none' if no fragment is a company name.",
-                {**options, "none": "No fragment names the sender's company."})
+                {**_company_options(options), "none": "No fragment names the sender's company."})
 
     if head_frags:
         head_options = {f"h{i + 1}": frag for i, frag in enumerate(head_frags)}
@@ -262,7 +309,7 @@ def build_card_and_posting(jev, email: dict) -> tuple[dict | None, dict | None]:
         questions["hiring_company"] = choice(
             "Which fragment names the company the job is AT — the employer, not the sender's own "
             "staffing agency? Answer 'none' if the hiring company is not named.",
-            {**head_options, "none": "The hiring company is not named."})
+            {**_company_options(head_options), "none": "The hiring company is not named."})
         questions["job_location"] = choice(
             "Which fragment is where the job is located — a city, state or country? Answer 'none' "
             "if no fragment names the job's location.",
@@ -299,8 +346,13 @@ def build_card_and_posting(jev, email: dict) -> tuple[dict | None, dict | None]:
     role = _pick(answers.get("job_title"), head_frags, prefix="h")
     if not role:
         return card, None
+    location = _pick(answers.get("job_location"), head_frags, prefix="h")
     company = _pick(answers.get("hiring_company"), head_frags, prefix="h")
-    if company and company.lower() == role.lower():
+    if company and (company.lower() == role.lower() or looks_like_address(company)):
+        company = None
+    # The place a job is cannot also be who is hiring for it. When Jev answers both questions with
+    # the same fragment (or the company inside the location), the company answer is the weaker one.
+    if company and location and company.lower() in location.lower():
         company = None
     if not company:
         # Unnamed client: the agency is the only company we can truthfully name.
@@ -310,7 +362,7 @@ def build_card_and_posting(jev, email: dict) -> tuple[dict | None, dict | None]:
         company = employer or "Unknown company"
     posting = {"company": _cap("company", company), "role": _cap("role", role),
                "link": pick_link(email), "action_required": False}
-    posting.update(job_details(email, role, _pick(answers.get("job_location"), head_frags, prefix="h")))
+    posting.update(job_details(email, role, location))
     return card, posting
 
 
@@ -325,7 +377,11 @@ def job_details(email: dict, role: str, location: str | None) -> dict:
     out: dict = {}
     if location and location.lower() != role.lower() and not re.fullmatch(r"(?i)remote", location):
         out["location"] = _cap("location", location)
-    out["remote"] = mode == "Remote"
+    # Only stated when the mode is known: `remote: false` is a claim, and work_mode() now returns
+    # None for text that contradicts itself rather than guessing. Omitted, Job Radar keeps its own
+    # default instead of being told the role is on-site (spec §3.5).
+    if mode is not None:
+        out["remote"] = mode == "Remote"
     if pay:
         out["salary_min"], out["salary_max"] = pay.salary_min, pay.salary_max
     header = " · ".join(x for x in (employment_type(text), mode, pay.header() if pay else None) if x)

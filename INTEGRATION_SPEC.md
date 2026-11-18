@@ -476,7 +476,7 @@ records the picks. A re-sent pitch the dedup store has seen is not written again
 | field | type | notes |
 |---|---|---|
 | `location` | string ≤200 | Jev's pick from the subject/body-head fragments; omitted for "Remote" |
-| `remote` | bool | `true` only when the pitch says remote and not hybrid/on-site |
+| `remote` | bool | `true` only when the pitch says remote and not hybrid/on-site. **Omitted entirely when the work mode cannot be read** — a labelled `Location(s)/Work mode/…` field decides when there is one, and free text that says both remote and on-site with no "hybrid" to reconcile them yields no mode at all. `false` is a claim, so it is sent only when on-site or hybrid is actually stated. |
 | `salary_min` / `salary_max` | int | annual USD, parsed by code (`agent/pay.py`); an **hourly rate is annualized at 40 h × 52 = 2,080 h** (user's decision 2026-10-23 — no hourly field) |
 | `description` | string ≤12,000 | one summary line (employment type · work mode · the rate as quoted, with its annual equivalent), then the newest message's text, quoted history cut |
 

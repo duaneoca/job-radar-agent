@@ -59,7 +59,7 @@ def test_fragments_drop_urls_emails_phones_and_name():
 
 
 def test_card_copies_values_and_uses_jev_picks():
-    frags = fragments(signature_lines(BODY), "Pat Example")
+    frags = fragments(signature_lines(BODY, "Pat Example"), "Pat Example")
     t, e = frags.index("Senior Technical Recruiter") + 1, frags.index("Example Staffing Inc") + 1
     jev = FakeJev({"title": _choice(f"f{t}"), "employer": _choice(f"f{e}"),
                    "is_agency": {"type": "noul", "noul": 0.92}})
@@ -121,7 +121,7 @@ def test_html_entities_and_parenthesised_area_codes():
 
 def test_pick_that_repeats_the_subject_is_the_role_not_the_sender():
     body = "Hi\nSarah\nGTM Recruiter\nSenior SA, AWS Industries"
-    frags = fragments(signature_lines(body), "Sarah")
+    frags = fragments(signature_lines(body, "Sarah"), "Sarah")
     jev = FakeJev({"title": _choice(f"f{frags.index('GTM Recruiter') + 1}"),
                    "employer": _choice(f"f{frags.index('Senior SA, AWS Industries') + 1}")})
     card = build_card(jev, {"sender": "Sarah <s@amazon.com>", "body_text": body,
@@ -136,3 +136,18 @@ def test_dice_relay_prefers_signature_address_else_keeps_the_relay():
     assert sig["email"] == "kajal@agency.com"
     relay = build_card(jev, _email(sender='"Kajal Saini" <3fc-mcp@user.dice.com>', body="Hi\nKajal"))
     assert relay["email"] == "3fc-mcp@user.dice.com"
+
+
+def test_signature_window_is_anchored_on_the_sender_name():
+    """The window starts at the sign-off, so a long legal tail cannot push it out of view."""
+    body = BODY.split("On Mon,")[0] + "\n".join(
+        f"Legal boilerplate line {i} about equal opportunity and unsubscribing." for i in range(20))
+    assert "Example Staffing Inc" not in " ".join(signature_lines(body))
+    sig = signature_lines(body, "Pat Example")
+    assert sig[0] == "Pat Example"
+    assert any("Example Staffing Inc" in ln for ln in sig)
+
+
+def test_signature_falls_back_to_the_tail_when_the_name_is_absent():
+    assert signature_lines(BODY, "Nobody Here") == signature_lines(BODY)
+    assert signature_lines(BODY, None) == signature_lines(BODY)
