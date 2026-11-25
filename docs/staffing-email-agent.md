@@ -10,6 +10,15 @@ the location filter and the apply-link rule — are **decided** and written belo
 behavior. §2.4's settings split is decided too, with `max_email_age_days` bounded by the operator
 cap (see "Settings come from Job Radar").
 
+Decisions of 2026-11-25:
+- **Cloud and local ship together.** The feature is for non-Proton users too (Gmail, IMAP), so
+  every step is built and tested for the cloud agent, not ported later. See "Deployment".
+- **Closed jobs absorb duplicates.** A vendor email for the same req as a job you dismissed,
+  rejected, or that expired is recorded as `duplicate` of that job. No new job, no draft.
+- **"Not a duplicate"** on a duplicate inbox item detaches the email from the matched job and
+  imports it as its own job. Filtered items get **"Import anyway"**.
+- **Contract pay vs. salary** is compared as-is (hourly × 2,080 against `min_salary`); accepted.
+
 ## Goal
 
 Staffing vendor emails land in Interaction unread and pile up. Most are noise: onsite in
@@ -67,6 +76,24 @@ The staffing step runs only on mail the sorter routes to Interaction with catego
 - Current mail only. The existing Interaction backlog is never processed for real. The backlog
   eval reads it, without touching any message.
 
+## Deployment: cloud and local from the first release
+
+The feature is not Proton-only. Cloud users (Gmail, Yahoo and other IMAP) get it from the first
+release, so each step below is done when it works in both the local agent and `job-radar-agent
+cloud`. What that adds:
+
+- **The sorter runs in cloud.** Stage A lives in the sort stage, and the sorter has never run in
+  cloud. It was gated on §3.6 Phase A+B because cloud dedup is `NullDedupStore`; job-radar #201
+  shipped Phase B (the server skips a repeated `dedup_key`). Confirm that on production, then
+  lift the gate.
+- **`TYPESAFE_API_KEY` in the cluster.** The Jev key is system-wide pod env; it isn't there yet.
+- **Settings from `/agent/settings`** are already per user in both modes (§2.4), so nothing here
+  is `.env`-only.
+- **Drafts on every provider.** Gmail `users.drafts.create` (inside `gmail.modify`), and IMAP
+  APPEND to `\Drafts` for Yahoo and generic IMAP, verified the same way as the Bridge check.
+- **Sender checks for non-Gmail users** need `trusted_authserv_ids` (§3.6), as the link picker
+  does today; without it the DMARC gate fails closed and no drafts are written.
+
 ## Flow
 
 ### Stage A: in the sort stage (job-radar-agent `sort_stage.py`)
@@ -100,13 +127,16 @@ For an in scope `recruiter_outreach` email, after `build_card_and_posting`:
      Both repos implement this same reduction; it is contract, not an implementation detail.
    - Employment type: the allowed types setting (new, in the Email Agent tab).
    - Pay: the top of the annualized range (hourly × 2,080) is at least Criteria `min_salary`.
+     A C2C or hourly rate carries no benefits or employer taxes, so this lets some contract
+     roles through that a loaded-cost comparison would drop. Accepted: the filters only drop
+     clear misses, and the AI review sees the rate.
    - Company: not in Criteria `excluded_companies`, when an end client is named.
 6. Dedup (see below). On a match, this email becomes another source of the existing job.
 7. If it passes filters and is not a duplicate: import it as a job, which queues the AI review.
 8. The outcome is recorded on the inbox item in the same write: `filtered` (with reason),
    `duplicate` (with the matched job), `imported` (with the new job). The reason is shown in
-   the app inbox, which keeps every email, with "process anyway" on filtered and duplicate
-   items.
+   the app inbox, which keeps every email, with **"Import anyway"** on filtered items and
+   **"Not a duplicate"** on duplicate items (see Dedup).
 9. Mark the email read in the mailbox, per category setting: default read for
    `recruiter_outreach` handled by this step, unread for everything else. This replaces the
    blanket `KEEP_UNREAD` for Interaction. Nothing is lost by marking it read, since the app
@@ -136,7 +166,7 @@ careers page means the link is the real way in.
 Scoring is async, so drafting is a separate pass:
 
 1. Ask Job Radar for draft candidates: email sourced jobs where the AI review is done, score
-   >= threshold, no draft yet, and no application recorded.
+   >= threshold, no draft yet, no application recorded, and not dismissed, rejected or expired.
 2. Fetch the original email from the mailbox by Message-ID. If it is gone, skip the draft and
    say why in Slack.
 3. Senders that fail the DMARC check (the link picker's `senders.py`) get no draft. The job is
@@ -175,6 +205,15 @@ jobs.
    or their own name as the company, so that key both misses real duplicates and merges
    unrelated reqs. An exact re-send goes through the same path and is recorded as `duplicate`,
    so every in scope email gets exactly one outcome.
+7. Closed jobs stay in the candidate set. A match against a job you dismissed, rejected, or
+   that expired is recorded as `duplicate` of that job, attached as a source for the record,
+   with a reason naming its status ("Same req as a job you dismissed on Nov 2"). No new job is
+   created and no draft is written, so a closed req doesn't come back through another vendor.
+8. **"Not a duplicate."** When dedup is wrong (two different reqs, often the same stack at the
+   same client), this button on the duplicate inbox item detaches the email from the matched job
+   and imports it as its own job. It then gets its own AI review, and a draft if it scores high
+   enough. It replaces the generic "process anyway" for duplicates; a filtered item's button is
+   "Import anyway".
 
 Thresholds are picked from the backlog eval (first task), not guessed.
 
@@ -243,8 +282,10 @@ Mail credentials and folder settings stay where they are today.
 4. Attach email as a source of an existing job, idempotent the same way; how the user applied
    (vendor or direct) on the job, editable in the UI.
 5. Outcome and reason on inbox postings; the inbox UI shows them, dims filtered and duplicate
-   items, and offers "process anyway".
-6. Email sourced job candidates for dedup; draft candidates; the draft stamp.
+   items, and offers "Import anyway" (filtered) and "Not a duplicate" (duplicate: detach from
+   the matched job, then import).
+6. Email sourced job candidates for dedup, including dismissed, rejected and expired jobs with
+   their status; draft candidates (never closed jobs); the draft stamp.
 7. Resume PDF storage (one file per user) next to the text resume, and `GET /agent/resume`.
 8. `email_draft` writing-skill scope.
 
@@ -264,6 +305,8 @@ Mail credentials and folder settings stay where they are today.
    Drafts folder only; never an MCP tool.
 8. Draft stage with checked LLM note and template fallback, DMARC gate, threading headers,
    quoted original, PDF attachment, stamp, Slack notify.
+9. Cloud (see Deployment): lift the cloud sorter gate once Phase B is confirmed, put
+   `TYPESAFE_API_KEY` in the cluster, and test each step under `job-radar-agent cloud`.
 
 ## Suggested order
 
@@ -274,4 +317,5 @@ Mail credentials and folder settings stay where they are today.
 5. Outcomes, mark read, Email Agent tab.
 6. Draft stage and Slack.
 
-Steps 1 to 3 are useful on their own even if drafting never ships.
+Each step is done when it works in both local and cloud. Steps 1 to 3 are useful on their own
+even if drafting never ships.
