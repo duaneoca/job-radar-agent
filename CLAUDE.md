@@ -26,6 +26,8 @@ agent/
   recruiter.py      §3.5 card from header/signature; Jev only PICKS title/employer fragments
   sort_stage.py     sort pass: classify → (Interaction: inbox write) → the one move
   schemas.py        LinkPicks — the LLM's only output shape
+  staffing.py       §3.9 Stage A building blocks (field rules, hard filters, shingle dedup) — pure;
+                    used by scripts/eval_staffing.py until Job Radar ships the endpoints
   verify.py         deterministic checks of the picks + corrective feedback
   dedup.py          dedup keys + SqliteDedupStore (local) / NullDedupStore (cloud)
   nodes.py graph.py state.py   the LangGraph pipeline for one email
@@ -36,6 +38,7 @@ agent/
 mcp_email/          MCP Server 1 — Email Reader (stdio) + providers (proton · gmail · imap, e.g. Yahoo)
 notifications/      notifier abstraction + slack/telegram/discord; run-summary dispatch
 scripts/            run_local (dry-run report), eval_sorter (read-only accuracy vs sorted folders),
+                    eval_staffing (read-only §3.9 backlog eval: coverage, outcomes, dedup pairs),
                     run_loop, run_cloud, smoke_*, mint_agent_key, gmail_auth
 tests/              synthetic samples only (tests/samples.py) — real emails are never committed
 ```
