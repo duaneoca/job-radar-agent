@@ -157,7 +157,8 @@ def main(argv) -> int:
             reason = hard_filter(f, crit)
             if reason:
                 outcomes.append(("filtered", reason, None))
-                reasons[reason.split(";")[0].split(" in ")[0][:40]] += 1
+                reasons[("Location" if reason.startswith("Located") else "Pay" if reason.startswith("Pay")
+                         else reason.split(";")[0][:40])] += 1
                 continue
             sim, j = max(((jaccard(sh[i], sh[k]), k) for k in imported), default=(0.0, None))
             if sim >= args.high:
@@ -225,10 +226,10 @@ def main(argv) -> int:
             print(f"  sim {s:.2f}  Jev {'?' if p is None else f'{p:.2f}'}  "
                   f"{items[j][1]['role'][:35]!r} vs {items[i][1]['role'][:35]!r}")
 
-    print("\nPer email (oldest first):")
+    print("\nPer email (oldest first; * = names both C2C and W2):")
     for (ref, f), (o, why, _) in zip(items, outcomes):
         top = f"${f['salary_max']:,}" if f["salary_max"] else "-"
-        print(f"  {_when(ref)} {o:<9} {f['employment_type']:<16} {(f['work_mode'] or '-'):<7} "
+        print(f"  {_when(ref)} {o:<9} {f['employment_type'] + ('*' if f['c2c_and_w2'] else ''):<17} {(f['work_mode'] or '-'):<7} "
               f"{(f['location'] or '-')[:18]:<18} {top:>9}  {f['role'][:40]!r}  [{why}]")
 
     print(f"\nJev: {jev.calls} calls, {jev.input_tokens} input tokens, ${jev.run_cost:.5f}  "
