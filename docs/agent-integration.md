@@ -101,19 +101,21 @@ never sends. Ship in the order below; the agent treats a missing endpoint as "fe
   (ownership-checked); `filtered` ⇒ store only. Idempotent on `(user_id, message_id)`: a repeat
   returns the existing rows and creates no second job. Return `review_ids[]` aligned with
   `posting_ids[]`.
-- **One shared import function** used by the inbox UI's Add Job, "process anyway"
-  (`POST /agent/inbox/postings/{id}/import`), the agent, and a new MCP tool `import_posting`.
-  It queues the AI review.
+- **One shared import function** used by the inbox UI's Add Job, "Import anyway" / "Not a
+  duplicate" (`POST /agent/inbox/postings/{id}/import`), the agent, and a new MCP tool
+  `import_posting`. It queues the AI review. On a `duplicate` posting the endpoint first detaches
+  the email as a source of `outcome_review_id` (ownership-checked), then imports.
 
 **4. Inbox UI**
 - Show outcome + reason per posting; dim `filtered` and `duplicate` (link to the matched job);
-  "process anyway" button; "apply directly" badge.
+  "Import anyway" on filtered, "Not a duplicate" on duplicate; "apply directly" badge.
 - On the job: its email sources, and "How I applied" (vendor / directly), editable.
 
 **5. Dedup and draft feeds**
-- `GET /agent/email-jobs?since_days=N` (§2.1).
+- `GET /agent/email-jobs?since_days=N` (§2.1), including dismissed, rejected and expired jobs,
+  each with its `status`.
 - `GET /agent/draft-candidates` (§3.9 Stage B): server applies the score threshold, "review done",
-  no stamp, `applied_via` null, not `apply_directly`; includes `profile_summary`
+  no stamp, `applied_via` null, not `apply_directly`, not dismissed / rejected / expired; includes `profile_summary`
   (`Profile.summary`) and the review's `ai_pros`.
 - `POST /agent/reviews/{review_id}/draft` stamp; idempotent; sets `applied_via` to the vendor by
   default.

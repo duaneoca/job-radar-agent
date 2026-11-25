@@ -1,7 +1,7 @@
 # INTEGRATION_SPEC — Job Radar Email Agent ⇄ Job Radar
 
-**Version:** 0.7 (staffing email agent — recruiter mail → jobs + reply drafts, §3.9; agent settings from Job Radar, §2.4; review decisions of 2026-11-13 folded in)
-**Previous:** 0.6 relay recruiters stay `recruiter_outreach` (§3.7); 0.5 mailbox retention (§3.8); 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
+**Version:** 0.8 (§3.9 decisions of 2026-11-25: cloud and local ship together; closed jobs absorb duplicates; "Not a duplicate" detaches and imports)
+**Previous:** 0.7 staffing email agent — recruiter mail → jobs + reply drafts (§3.9), agent settings from Job Radar (§2.4); 0.6 relay recruiters stay `recruiter_outreach` (§3.7); 0.5 mailbox retention (§3.8); 0.4 agent sorter (§3.7); 0.3 agent V2 link picker for job alerts (§3.6; `dedup_key` + `email_policy`); 0.2 added §3.5 recruiter contacts (V1, revived by §3.7).
 **Status:** Contract of record between `job-radar-agent` (the agent) and `job-radar` (the platform).
 **Audience:** both repos. Each side builds independently against this document. If reality and this doc disagree, fix the doc in the same PR.
 
@@ -238,8 +238,8 @@ posting of an email deletes the `inbox_emails` row (mirror existing last-review-
 | `GET /agent/reviews` | (user from key) | `[{review_id, company, title, status, url}]` | The user's `UserJobReview` rows, for matching/dedup. |
 | `GET /agent/settings` | (user from key) | §2.4 | **NEW.** The user's NON-SECRET agent settings. Externally reachable (unlike `/agent/config`); MUST NOT carry any key, password or token. |
 | `GET /agent/resume` | (user from key) | `application/pdf` | **NEW (§3.9).** The resume PDF. 404 when none. The agent fetches it only when `staffing.resume.sha256` changes. |
-| `GET /agent/email-jobs?since_days=N` | (user from key) | `[{review_id, company, role, location, work_mode, jd_text, created_at, applied_via}]` | **NEW (§3.9).** Email-sourced jobs for dedup. |
-| `GET /agent/draft-candidates` | (user from key) | §3.9 | **NEW (§3.9).** Email-sourced jobs with the AI review done, `ai_score ≥` the draft threshold, no draft, no application recorded. |
+| `GET /agent/email-jobs?since_days=N` | (user from key) | `[{review_id, company, role, location, work_mode, jd_text, created_at, applied_via, status}]` | **NEW (§3.9).** Email-sourced jobs for dedup, **including** dismissed, rejected and expired ones (`status` says which). |
+| `GET /agent/draft-candidates` | (user from key) | §3.9 | **NEW (§3.9).** Email-sourced jobs with the AI review done, `ai_score ≥` the draft threshold, no draft, no application recorded, not dismissed / rejected / expired. |
 | `POST /agent/reviews/{review_id}/draft` | `{draft_message_id, vendor, note_kind}` | `{ok}` | **NEW (§3.9).** Draft stamp. Idempotent; a second stamp returns the first. Validates ownership `[H1]`. |
 | `POST /agent/inbox` | inbox payload (§3.1) | `{inbox_email_id, posting_ids[]}` | Creates email + ≤30 postings. Validates link scheme `[C2]`. On `recruiter_outreach` may carry a recruiter card (§3.5) — typed `recruiter` and/or `raw_extracted_json.recruiter_contact`. |
 | `POST /agent/interactions` | interaction payload (§3.2) | `{interaction_id, applied_status?}` | If matched, updates the review status + timeline (reuses existing PATCH logic) `[D9/D10]`. |
@@ -287,7 +287,7 @@ on the dual-auth reads/writes. (`/agent/cloud/config/{user_id}` carries the id i
 | `GET /agent/inbox` | user's inbox emails + postings/interactions (paginated) |
 | `PATCH /agent/inbox/{id}` | dismiss / mark-handled |
 | `DELETE /agent/inbox/{id}` | delete (cascades postings; mirrors job delete) |
-| `POST /agent/inbox/postings/{id}/import` | **NEW (§3.9).** "Process anyway" on a `filtered` / `duplicate` posting; same shared import function |
+| `POST /agent/inbox/postings/{id}/import` | **NEW (§3.9).** "Import anyway" on a `filtered` posting; "Not a duplicate" on a `duplicate` posting (first detaches it as a source of `outcome_review_id`, ownership-validated `[H1]`). Then the same shared import function |
 | `GET /agent/stats` | ops-dashboard metrics (per-user); admin variant returns global |
 | `GET /agent/keys` | list this user's agent keys (`key_hint` only, never plaintext) |
 | `POST /agent/keys` | mint a new agent key; returns the plaintext **once** |
@@ -733,7 +733,8 @@ Mitigations: Trash is recoverable, starring protects, per-run cap, counts in eve
 
 ### 3.9 Staffing email agent — recruiter mail → jobs + reply drafts `[D27]`
 
-Design and rationale: `docs/staffing-email-agent.md`. Off unless `staffing.enabled` (§2.4); drafts
+Design and rationale: `docs/staffing-email-agent.md`. **Cloud and local ship together** (Gmail,
+IMAP and Proton); a step is done when it works under `job-radar-agent cloud` too. Off unless `staffing.enabled` (§2.4); drafts
 also need `staffing.auto_draft`. Current mail only — the existing Interaction backlog is never
 processed (the backlog eval reads it without touching any message).
 
@@ -772,7 +773,9 @@ Other Interaction categories are untouched.
    `jd_text`: ≥ high threshold ⇒ duplicate; ≤ low ⇒ new; between ⇒ Jev yes/no "same job?" (≥ 0.75
    duplicate, else new). Thresholds come from the backlog eval. For in-scope mail this replaces the
    company + role `dedup_key` skip (vendors write "our client" or their own name), so an exact re-send
-   is recorded as `duplicate` too and every in-scope email gets exactly one outcome.
+   is recorded as `duplicate` too and every in-scope email gets exactly one outcome. **Closed
+   jobs count:** a match against a dismissed, rejected or expired job is `duplicate` of it (reason
+   names the status); no new job, no draft.
 4. **One inbox write** (`POST /agent/inbox`, §3.1) carrying the posting with its outcome:
    ```json
    { "company": "Acme", "role": "Data Architect", "link": "https://…",
@@ -789,8 +792,10 @@ Other Interaction categories are untouched.
 5. **Mark read by outcome** (`staffing.mark_read`): in-scope `recruiter_outreach` ⇒ read (default);
    `application_update`, `connection_request`, `direct_message` and excluded senders ⇒ unread
    (default). Replaces the blanket "Interaction stays unread" of §3.7 for these cases. The app inbox
-   keeps every email with its outcome and reason; filtered and duplicate items are dimmed and offer
-   "process anyway" (`POST /agent/inbox/postings/{id}/import`).
+   keeps every email with its outcome and reason; filtered and duplicate items are dimmed.
+   Filtered items offer **"Import anyway"**; duplicate items offer **"Not a duplicate"**, which
+   detaches the email from the matched job and imports it as its own
+   (`POST /agent/inbox/postings/{id}/import` for both).
 
 **Apply links:** `staffing.apply_directly` = an apply link was picked AND `is_agency` is **exactly
 `false`** (an in-house recruiter pointing at their own careers page). Such jobs get **no draft, but
@@ -815,7 +820,7 @@ are not symmetric: a wrong "agency" costs a draft the user deletes in seconds, w
                     "recruiter_first_name": "Pat", "apply_directly": false } ] }
 ```
 Server filter: source `email`, AI review done, `ai_score ≥ staffing.draft_score_threshold`, no draft
-stamp, `applied_via` null, not `apply_directly`. `source` is the FIRST email of the job — later vendor
+stamp, `applied_via` null, not `apply_directly`, status not dismissed / rejected / expired. `source` is the FIRST email of the job — later vendor
 emails are attached sources and never get a draft.
 
 Per candidate:
