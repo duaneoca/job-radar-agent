@@ -23,6 +23,10 @@ from dataclasses import dataclass, field
 from .pay import _HOURLY_ONE, _HOURLY_RANGE, _RATE_LABEL, Pay, employment_type, work_mode
 
 EMPLOYMENT_TYPES = ("full_time", "contract", "contract_c2c", "contract_w2", "contract_to_hire")
+# Dedup thresholds, from the backlog eval of 2026-11-25 (150 Interaction emails: best-match
+# similarity is bimodal — 60 below 0.1, 15 at 0.9 or above, 8 between). Between LOW and HIGH,
+# Jev's "same job?" decides at SAME_JOB_MIN.
+DEDUP_LOW, DEDUP_HIGH, SAME_JOB_MIN = 0.3, 0.9, 0.75
 JD_CAP = 20_000
 SHINGLE_WORDS = 5
 
@@ -52,7 +56,10 @@ _BY_NAME = {v.lower(): k for k, v in STATES.items()}
 _STATE_NAMES = "|".join(sorted((re.escape(v) for v in STATES.values()), key=len, reverse=True))
 # "Dallas, TX", "Dallas, Texas", "Dallas TX 75201". The city is 1–4 capitalised words.
 _CITY_STATE = re.compile(
-    r"\b((?:[A-Z][A-Za-z.'-]*\s){0,3}[A-Z][A-Za-z.'-]*),?\s+(" + _STATE_NAMES + r"|[A-Z]{2})\b")
+    r"(?<![/\w])((?:[A-Z][A-Za-z.'-]*\s){0,3}[A-Z][A-Za-z.'-]*),?\s+(" + _STATE_NAMES + r"|[A-Z]{2})\b")
+_STATE_LEAD = re.compile(r"^\s*(" + _STATE_NAMES + r"|[A-Z]{2})\b(?!\s*,)")      # "Iowa (Remote ok)"
+_STATE_AFTER_COMMA = re.compile(r",\s*(" + _STATE_NAMES + r"|[A-Z]{2})\b")
+_NOT_A_CITY = {"n/a", "na", "tbd", "usa", "us", "remote", "hybrid", "onsite", "on-site"}
 _STATE_ONLY = re.compile(r"^\s*(" + _STATE_NAMES + r"|[A-Z]{2})\s*$", re.I)
 _LOCATION_LABEL = re.compile(r"(?im)^[^\S\n]*(?:job\s*)?location\s*[:\-–—]\s*(.+)$")
 
@@ -61,8 +68,10 @@ _LOCATION_LABEL = re.compile(r"(?im)^[^\S\n]*(?:job\s*)?location\s*[:\-–—]\s
 
 def employment_type_enum(text: str, pay: Pay | None, is_agency: bool | None) -> str:
     """§3.9 order: explicit text > hourly pay quoted ⇒ contract > is_agency true ⇒ contract >
-    full_time. C2C and W2 stay distinct; when both are named, the earlier rule in agent/pay.py
-    (C2C) wins — `mentions_c2c_and_w2` lets the eval count how often that happens."""
+    full_time. C2C and W2 stay distinct; an email naming BOTH is plain `contract`, which the
+    employment-type filter passes when any contract flavour is allowed."""
+    if mentions_c2c_and_w2(text):
+        return "contract"           # "W2 or C2C": both are on offer (decided 2026-11-25)
     explicit = _EXPLICIT.get(employment_type(text) or "")
     if explicit:
         return explicit
@@ -94,21 +103,58 @@ def _state_code(token: str, *, lenient: bool = False) -> str | None:
     return _BY_NAME.get(t.lower())
 
 
-def clean_location(*candidates: str | None) -> str | None:
-    """The first candidate that names a US place, as "City, ST" or "ST". A labelled "Location:"
-    line is the caller's to pass; nothing here is geocoded or guessed."""
+def clean_locations(*candidates: str | None) -> list[str]:
+    """Every US place the FIRST useful candidate names, each "City, ST" or "ST", in order. Callers
+    pass the most reliable source first: a labelled "Location:" line, then Jev's pick (a subject
+    line can contradict the body). Nothing here is geocoded or guessed."""
     for cand in candidates:
         if not cand:
             continue
-        cand = re.sub(r"\s+", " ", cand).strip()
+        cand = re.sub(r"\s+", " ", cand.replace("\xa0", " ")).strip()
+        found: list[str] = []
         for m in _CITY_STATE.finditer(cand):
             code = _state_code(m.group(2))
             city = _CITY_NOISE.sub("", m.group(1).strip()).strip()
-            if code and city and not (len(city) == 2 and city.isupper()):
-                return f"{city}, {code}"
-        if (m := _STATE_ONLY.match(cand)) and (code := _state_code(m.group(1))):
-            return code
-    return None
+            if not code:
+                continue
+            if len(city) < 2 or city.lower() in _NOT_A_CITY or (len(city) == 2 and city.isupper()):
+                place = code
+            else:
+                place = f"{city}, {code}"
+            if place not in found:
+                found.append(place)
+        if not found:
+            # "N/A, New Jersey": a state after a comma, with no usable city in front of it.
+            found = [c for m in _STATE_AFTER_COMMA.finditer(cand) if (c := _state_code(m.group(1)))]
+        if not found and (m := _STATE_ONLY.match(cand) or _STATE_LEAD.match(cand)) \
+                and (code := _state_code(m.group(1))):
+            found = [code]
+        if found:
+            return found
+    return []
+
+
+def clean_location(*candidates: str | None) -> str | None:
+    """The first place `clean_locations` finds — the posting's `location` field."""
+    places = clean_locations(*candidates)
+    return places[0] if places else None
+
+
+def job_locations(*, subject: str, label: str | None, pick: str | None,
+                  signature: list[str]) -> list[str]:
+    """The job's places, never the agency's. `label` must come from text ABOVE the signature
+    (`labelled_location(jd_text(...))`); `pick` is Jev's fragment from the subject + body head,
+    which in a short email can run into the signature. A place that also appears in the sender's
+    signature is the agency's office unless the subject or the label names it too — "Chicago, IL"
+    in both the subject and the signature is a Chicago job; "Edison, NJ" only in the body head and
+    the signature is where the recruiter sits."""
+    agency = {pl for ln in signature for pl in clean_locations(ln)}
+    vouched = set(clean_locations(subject)) | set(clean_locations(label))
+    for cand in (label, pick):
+        places = [pl for pl in clean_locations(cand) if pl not in agency or pl in vouched]
+        if places:
+            return places
+    return []
 
 
 def labelled_location(newest: str) -> str | None:
@@ -245,11 +291,17 @@ def hard_filter(posting: dict, c: Criteria) -> str | None:
     if mode and allowed_modes and mode not in allowed_modes:
         return f"Work mode {mode}; your search is {c.work_style}"
     if mode != "remote" and c.states:
-        st = state_of(posting.get("location"))
-        if st and st not in c.states:
-            return f"Located in {posting['location']}; outside {', '.join(sorted(c.states))}"
+        # A role offered in several places passes when ANY of them is allowed.
+        states = {st for loc in (posting.get("locations") or [posting.get("location")])
+                  if (st := state_of(loc))}
+        if states and not states & c.states:
+            where = " / ".join(posting.get("locations") or [posting["location"]])
+            return f"Located in {where}; outside {', '.join(sorted(c.states))}"
     et = posting.get("employment_type")
-    if et and et not in c.allowed_employment_types:
+    allowed = set(c.allowed_employment_types)
+    if et == "contract" and allowed & {"contract_c2c", "contract_w2"}:
+        allowed.add("contract")         # plain "contract" may be either flavour
+    if et and et not in allowed:
         return f"Employment type {et} is not in your allowed types"
     top = posting.get("salary_max")
     if top and c.min_salary and top < c.min_salary:

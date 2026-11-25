@@ -3,7 +3,8 @@
 import pytest
 
 from agent.pay import parse_pay
-from agent.staffing import (Criteria, allowed_states, clean_location, employment_type_enum,
+from agent.staffing import (Criteria, allowed_states, clean_location, clean_locations, job_locations,
+                            employment_type_enum,
                             hard_filter, jaccard, jd_text, labelled_location, mentions_c2c_and_w2,
                             shingles, state_of, work_mode_enum)
 
@@ -165,3 +166,57 @@ def test_onsite_and_any_pass_every_mode_and_empty_states_skip_location():
     c = Criteria.from_dict({"work_style": "onsite"})
     assert hard_filter({"work_mode": "remote", "location": "Seattle, WA"}, c) is None
     assert hard_filter({"work_mode": "onsite", "location": "Seattle, WA"}, c) is None
+
+
+# ── decisions and fixes from the 2026-11-25 backlog eval ──
+
+def test_w2_or_c2c_is_plain_contract_and_passes_when_c2c_is_excluded():
+    assert employment_type_enum("Open to W2 or C2C", None, True) == "contract"
+    no_c2c = Criteria.from_dict({}, allowed_types=["full_time", "contract_w2"])
+    assert hard_filter({"employment_type": "contract"}, no_c2c) is None
+    only_ft = Criteria.from_dict({}, allowed_types=["full_time"])
+    assert "contract" in hard_filter({"employment_type": "contract"}, only_ft)
+
+
+@pytest.mark.parametrize("cand,expected", [
+    ("N/A,\xa0New Jersey", ["NJ"]),
+    ("Berkeley Height, NJ / SFO, CA", ["Berkeley Height, NJ", "SFO, CA"]),
+    ("Boston, MA or Franklin, TN (hybrid)", ["Boston, MA", "Franklin, TN"]),
+    ("Iowa (Remote ok)", ["IA"]),
+])
+def test_clean_locations(cand, expected):
+    assert clean_locations(cand) == expected
+
+
+def test_labelled_line_is_passed_first_and_wins():
+    assert clean_location("Boston, MA or Franklin, TN", "position in BOSTON, Tennessee") == "Boston, MA"
+
+
+def test_any_listed_state_allowed_passes_the_location_filter():
+    c = Criteria.from_dict({"home_city": "Oakland, CA"})
+    assert hard_filter({"work_mode": "onsite", "location": "Berkeley Height, NJ",
+                        "locations": ["Berkeley Height, NJ", "SFO, CA"]}, c) is None
+    assert "NJ / Boston, MA" in hard_filter({"location": "Edison, NJ",
+                                             "locations": ["Edison, NJ", "Boston, MA"]}, c)
+
+
+# ── the agency's own office is never the job's location ──
+
+SIG = ["Pat Recruiter", "Example Staffing Inc.", "99 Wood Ave, Suite 300", "Edison, NJ 08837"]
+
+
+def test_place_only_in_body_head_and_signature_is_the_agencys():
+    assert job_locations(subject="AI Engineer Role", label=None, pick="Edison, NJ", signature=SIG) == []
+
+
+def test_subject_vouches_for_a_job_in_the_agencys_city():
+    sig = ["Pat Recruiter", "Chicago, IL"]
+    assert job_locations(subject="Architect - Chicago, IL (Hybrid)", label=None, pick="Chicago, IL",
+                         signature=sig) == ["Chicago, IL"]
+
+
+def test_label_above_signature_wins_and_signature_places_are_dropped_from_a_list():
+    assert job_locations(subject="AI Engineer", label="Dallas, TX", pick="Edison, NJ",
+                         signature=SIG) == ["Dallas, TX"]
+    assert job_locations(subject="AI Engineer", label=None, pick="Edison, NJ / Austin, TX",
+                         signature=SIG) == ["Austin, TX"]

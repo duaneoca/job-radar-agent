@@ -36,9 +36,10 @@ from agent.config import make_jev, settings            # noqa: E402
 from agent.jev import JevError, noul                   # noqa: E402
 from agent.pay import parse_pay                        # noqa: E402
 from agent.reader import to_ref                        # noqa: E402
-from agent.recruiter import build_card_and_posting, clean_name, newest_message   # noqa: E402
+from agent.recruiter import build_card_and_posting, clean_name, newest_message, signature_lines  # noqa: E402
 from agent.sorter import _on_domain, classify, sender_domain                     # noqa: E402
-from agent.staffing import (EMPLOYMENT_TYPES, Criteria, clean_location, employment_type_enum,  # noqa: E402
+from agent.staffing import (DEDUP_HIGH, DEDUP_LOW, EMPLOYMENT_TYPES, SAME_JOB_MIN,  # noqa: E402
+                            Criteria, employment_type_enum, job_locations,
                             hard_filter, jaccard, jd_text, labelled_location, mentions_c2c_and_w2,
                             shingles, work_mode_enum)
 from mcp_email.config import folders                   # noqa: E402
@@ -74,6 +75,11 @@ def extract(jev, ref: dict) -> dict | None:
     text = f"{ref.get('subject') or ''}\n{newest}"
     pay = parse_pay(text)
     is_agency = (card or {}).get("is_agency")
+    name = clean_name(ref.get("sender") or "")
+    jd = jd_text(newest, name)
+    places = job_locations(subject=ref.get("subject") or "", label=labelled_location(jd),
+                           pick=posting.get("location"),
+                           signature=signature_lines(ref.get("body_text") or "", name))
     company = posting.get("company") or ""
     return {
         "role": posting["role"],
@@ -83,10 +89,11 @@ def extract(jev, ref: dict) -> dict | None:
         "employment_type": employment_type_enum(text, pay, is_agency),
         "c2c_and_w2": mentions_c2c_and_w2(text),
         "work_mode": work_mode_enum(text),
-        "location": clean_location(posting.get("location"), labelled_location(newest)),
+        "location": (places[0] if places else None),
+        "locations": places,
         "salary_max": pay.salary_max if pay else None,
         "hourly": bool(pay and pay.hourly),
-        "jd": jd_text(newest, clean_name(ref.get("sender") or "")),
+        "jd": jd,
         "link": posting.get("link"),
     }
 
@@ -97,8 +104,8 @@ def main(argv) -> int:
     ap.add_argument("--criteria", help="JSON file shaped like staffing.criteria (§2.4)")
     ap.add_argument("--allowed-types", default=",".join(EMPLOYMENT_TYPES))
     ap.add_argument("--excluded-domains", default="linkedin.com")
-    ap.add_argument("--high", type=float, default=0.6, help="provisional: ≥ this ⇒ duplicate")
-    ap.add_argument("--low", type=float, default=0.25, help="provisional: ≤ this ⇒ new")
+    ap.add_argument("--high", type=float, default=DEDUP_HIGH, help="≥ this ⇒ duplicate")
+    ap.add_argument("--low", type=float, default=DEDUP_LOW, help="≤ this ⇒ new")
     ap.add_argument("--jev-gray", action="store_true", help="ask Jev 'same job?' on gray-zone pairs")
     ap.add_argument("--pairs", type=int, default=25, help="top similar pairs to print")
     ap.add_argument("--no-classify", action="store_true",
@@ -169,7 +176,7 @@ def main(argv) -> int:
             elif args.jev_gray:
                 p = same_job_probability(jev, items[j][1]["jd"], f["jd"])
                 gray_asked.append((sim, p, j, i))
-                if p is not None and p >= 0.75:
+                if p is not None and p >= SAME_JOB_MIN:
                     outcomes.append(("duplicate", f"gray {sim:.2f}, Jev {p:.2f}", j))
                 else:
                     outcomes.append(("imported", f"gray {sim:.2f}, Jev {p if p is None else round(p, 2)}", j))

@@ -741,7 +741,8 @@ processed (the backlog eval reads it without touching any message).
 **Scope:** mail the sorter (§3.7) routes to Interaction as `recruiter_outreach`, whose sender domain
 (subdomains included) is not in `staffing.excluded_sender_domains` (default `linkedin.com`). Excluded
 mail keeps today's behavior exactly (inbox write with the pitched role, unread, no import, no draft).
-Other Interaction categories are untouched.
+So does a `recruiter_outreach` email with **no pitched role** extracted: it is out of scope (inbox
+write, unread, no outcome). Other Interaction categories are untouched.
 
 #### Stage A — in the sort stage, per in-scope email
 
@@ -749,17 +750,17 @@ Other Interaction categories are untouched.
    and:
    | Field | Rule |
    |---|---|
-   | `employment_type` | explicit text (C2C, W2, contract to hire, full time) > hourly pay quoted ⇒ `contract` > `is_agency` true ⇒ `contract` > `full_time`. C2C and W2 stay distinct |
+   | `employment_type` | explicit text (C2C, W2, contract to hire, full time) > hourly pay quoted ⇒ `contract` > `is_agency` true ⇒ `contract` > `full_time`. C2C and W2 stay distinct; an email naming **both** is `contract` |
    | `work_mode` | `onsite \| hybrid \| remote` from explicit text; vague or missing ⇒ null |
-   | `location` | cleaned to `City, ST`, or `ST` when only a state is named; else null |
+   | `location` | cleaned to `City, ST`, or `ST` when only a state is named; else null. Sources in order: a labelled `Location:` line **above the signature**, then Jev's pick (a subject can contradict the body). **Never the agency's office:** a place that also appears in the sender's signature is dropped unless the subject or the label names it too. Every remaining place is kept for the filter; the first is stored |
    | `link` (apply link) | Jev picks one of the agent's numbered extracted links (`extract.py`) or none; URLs never come from a model and are never followed `[M2]` |
    | `jd_text` | body minus greeting, signature (`signature_lines`), recruiter name, rate lines and stock boilerplate |
 2. **Hard filters (deterministic).** Drop clear misses only; a missing field never fails a filter.
    | Filter | Passes when |
    |---|---|
    | Work mode | `criteria.work_style`: `remote` ⇒ remote; `hybrid` ⇒ remote or hybrid; `onsite` / `any` ⇒ all |
-   | Location | remote, or the role's state is in the **allowed state set** (below). No geocoding — commute distance stays with the AI review's `location_rank` |
-   | Employment type | in `staffing.allowed_employment_types` |
+   | Location | remote, or **any** of the role's states is in the **allowed state set** (below). No geocoding — commute distance stays with the AI review's `location_rank` |
+   | Employment type | in `staffing.allowed_employment_types`; plain `contract` also passes when `contract_c2c` or `contract_w2` is allowed |
    | Pay | top of the annualized range (hourly × 2,080) ≥ `criteria.min_salary` |
    | Company | end client named and not in `criteria.excluded_companies` |
    **Allowed state set** — `criteria.home_city` and `criteria.search_locations` carry different
@@ -771,7 +772,9 @@ Other Interaction categories are untouched.
 3. **Dedup** against `GET /agent/email-jobs?since_days=<staffing.dedup_window_days>`, fetched once
    per run; jobs imported earlier in the same run are appended. Jaccard over 5-word shingles of
    `jd_text`: ≥ high threshold ⇒ duplicate; ≤ low ⇒ new; between ⇒ Jev yes/no "same job?" (≥ 0.75
-   duplicate, else new). Thresholds come from the backlog eval. For in-scope mail this replaces the
+   duplicate, else new). **Low 0.3, high 0.9** (backlog eval of 2026-11-25, 150 emails: best-match
+   similarity is bimodal, 60 below 0.1 and 15 at 0.9+). No age factor: identical re-sends two
+   weeks apart are still duplicates, and Jev keeps same-title reqs a week apart separate. For in-scope mail this replaces the
    company + role `dedup_key` skip (vendors write "our client" or their own name), so an exact re-send
    is recorded as `duplicate` too and every in-scope email gets exactly one outcome. **Closed
    jobs count:** a match against a dismissed, rejected or expired job is `duplicate` of it (reason

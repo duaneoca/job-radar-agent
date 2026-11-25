@@ -19,6 +19,19 @@ Decisions of 2026-11-25:
   imports it as its own job. Filtered items get **"Import anyway"**.
 - **Contract pay vs. salary** is compared as-is (hourly × 2,080 against `min_salary`); accepted.
 
+From the backlog eval (2026-11-25, 150 Interaction emails, 88 in scope; `scripts/eval_staffing.py`):
+- **Dedup thresholds: low 0.3, high 0.9, Jev ≥ 0.75 between.** Best-match similarity is bimodal
+  (60 emails below 0.1, 15 at 0.9+, 8 between). No age factor.
+- **"W2 or C2C" is plain `contract`.** All 5 emails the C2C filter dropped also offered W2; plain
+  `contract` passes when either flavour is allowed.
+- **No pitched role ⇒ out of scope** (15 of 103 recruiter emails): today's behavior, no outcome.
+- **Location:** a labelled `Location:` line beats Jev's pick, and a role listed in several places
+  passes the filter when any of them is allowed ("Berkeley Heights, NJ / SFO, CA").
+- **Never the agency's location.** The label is read only above the signature, and a place that
+  also appears in the sender's signature is dropped unless the subject or the label names it too
+  (a Chicago job from a Chicago agency stays Chicago; the agency's Edison, NJ office in a short
+  email's body head is not the job's location).
+
 ## Goal
 
 Staffing vendor emails land in Interaction unread and pile up. Most are noise: onsite in
@@ -66,7 +79,8 @@ config (in cluster, because it carries decrypted secrets). This feature changes 
 ## Scope: which emails
 
 The staffing step runs only on mail the sorter routes to Interaction with category
-`recruiter_outreach`, and whose sender is not in the excluded sender domains list.
+`recruiter_outreach`, and whose sender is not in the excluded sender domains list. An email with
+no pitched role extracted is out of scope too and keeps today's behavior.
 
 - Excluded sender domains: a setting, default `linkedin.com` (subdomains included).
 - LinkedIn pitched roles keep today's behavior exactly: written to the app inbox, left
@@ -104,17 +118,19 @@ For an in scope `recruiter_outreach` email, after `build_card_and_posting`:
    work mode, pay, employment type, the cleaned JD, and the apply link if there is one.
 2. Employment type, decided in this order:
    explicit text (C2C, W2, contract to hire, full time) > hourly pay quoted means Contract >
-   `is_agency` true means Contract > Full time. C2C and W2 stay distinct, as a field.
+   `is_agency` true means Contract > Full time. C2C and W2 stay distinct, as a field; an email
+   naming both ("W2 or C2C") is plain Contract.
 3. Work mode has three values: onsite, hybrid, remote. Job Radar replaces its `remote` boolean
    with `work_mode` and migrates existing jobs. Vague or missing work mode is left empty.
 4. Location is cleaned to `City, ST`, or `ST` when only a state is named. Deterministic, no LLM.
+   A labelled `Location:` line is read before Jev's pick; every place named is kept for the filter.
 5. Hard filters, deterministic, no LLM. They drop clear misses only. Closer calls are left to
    the AI review, which already ranks location. A missing field never fails a filter.
    - Work mode: from Criteria `work_style`. `remote` passes remote only; `hybrid` passes remote
      and hybrid; `onsite` and `any` pass everything. The ladder is deliberately permissive at the
      `onsite` end — an onsite-preferring user should still have remote roles scored, not deleted
      before the AI review sees them.
-   - Location: a remote role passes. An onsite or hybrid role passes when its state is in the
+   - Location: a remote role passes. An onsite or hybrid role passes when any of its states is in the
      user's **allowed state set**. No geocoding; commute distance stays with the AI review.
      The allowed state set is built from Criteria `home_city` **and** `search_locations`, both
      reduced to two-letter state codes, because the two fields carry different shapes
@@ -215,7 +231,8 @@ jobs.
    enough. It replaces the generic "process anyway" for duplicates; a filtered item's button is
    "Import anyway".
 
-Thresholds are picked from the backlog eval (first task), not guessed.
+Thresholds come from the backlog eval: **low 0.3, high 0.9**, Jev "same job?" ≥ 0.75 between
+(`agent/staffing.py`: `DEDUP_LOW`, `DEDUP_HIGH`, `SAME_JOB_MIN`).
 
 **One draft per job.** Dedup sends every later vendor email for the same req to the existing
 job, and the draft stamp blocks a second draft. The job records how the user applied: the
